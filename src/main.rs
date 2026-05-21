@@ -60,7 +60,6 @@ enum AppState {
     Editing,
     PromptingSave(String),
     PromptingLoad(String),
-    RunningInput { prompt: String, input: String },
     ConfirmQuit(String),
     ConfirmNew(String),
 }
@@ -174,7 +173,7 @@ USAGE:
 
 SHORTCUTS:
     F5/Ctrl+R run   F6 stop   F2/Ctrl+S save   F12 save as
-    F3/Ctrl+O open  Ctrl+N new   Ctrl+L clear console   Esc/Ctrl+Q quit",
+    F3/Ctrl+O open  Ctrl+N new   Esc/Ctrl+Q quit",
         name = APP_NAME,
         version = env!("CARGO_PKG_VERSION")
     )
@@ -231,7 +230,6 @@ fn run_ide_loop(
     }
     configure_editor(&mut textarea, &current_file, dirty, false);
 
-    let mut console_output: Vec<String> = vec![String::from("Console ready.")];
     let mut editor_view = EditorView::default();
 
     let mut app_state = AppState::Editing;
@@ -246,7 +244,6 @@ fn run_ide_loop(
                 .constraints([
                     Constraint::Length(3),
                     Constraint::Min(8),
-                    Constraint::Percentage(30),
                     Constraint::Length(3),
                 ])
                 .split(f.area());
@@ -271,25 +268,12 @@ fn run_ide_loop(
                 &mut editor_view,
             );
 
-            let console_lines: Vec<String> = console_output
-                .iter()
-                .rev()
-                .take(chunks[2].height.saturating_sub(2) as usize)
-                .rev()
-                .cloned()
-                .collect();
-            let console_text = console_lines.join("\n");
-            let console = Paragraph::new(console_text)
-                .style(Style::default().fg(Color::White))
-                .block(Block::default().borders(Borders::ALL).title(" Console "));
-            f.render_widget(console, chunks[2]);
-
             let footer_text = footer_text(&app_state, &status_msg);
             let footer_color = footer_color(&app_state, status_color);
             let footer = Paragraph::new(footer_text)
                 .style(Style::default().fg(footer_color).bg(Color::Black))
                 .block(Block::default().borders(Borders::ALL).title(" Status "));
-            f.render_widget(footer, chunks[3]);
+            f.render_widget(footer, chunks[2]);
         })?;
 
         poll_running_program(
@@ -297,33 +281,11 @@ fn run_ide_loop(
             &mut is_running,
             &mut status_msg,
             &mut status_color,
-            &mut console_output,
         );
 
         if event::poll(std::time::Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
                 match &mut app_state {
-                    AppState::RunningInput { prompt, input } => match key.code {
-                        KeyCode::Enter => {
-                            let val = input.clone();
-                            if let Some(last) = console_output.last_mut() {
-                                last.push_str(prompt);
-                                last.push_str(&val);
-                            }
-                            console_output.push(String::new());
-                            app_state = AppState::Editing;
-                        }
-                        KeyCode::Backspace => {
-                            input.pop();
-                        }
-                        KeyCode::Char(c) => {
-                            input.push(c);
-                        }
-                        KeyCode::Esc => {
-                            app_state = AppState::Editing;
-                        }
-                        _ => {}
-                    },
                     AppState::PromptingSave(input) => match key.code {
                         KeyCode::Enter => {
                             let target_file = prompt_target_path(input, &current_file);
@@ -398,8 +360,6 @@ fn run_ide_loop(
                             textarea = textarea_from_source("");
                             editor_view = EditorView::default();
                             dirty = false;
-                            console_output.clear();
-                            console_output.push(String::from("New program."));
                             status_msg = String::from("New program");
                             status_color = Color::Green;
                             app_state = AppState::Editing;
@@ -435,7 +395,6 @@ fn run_ide_loop(
                                     &textarea,
                                     &current_file,
                                     &mut running_program,
-                                    &mut console_output,
                                     &mut is_running,
                                     &mut status_msg,
                                     &mut status_color,
@@ -451,7 +410,6 @@ fn run_ide_loop(
                                     &textarea,
                                     &current_file,
                                     &mut running_program,
-                                    &mut console_output,
                                     &mut is_running,
                                     &mut status_msg,
                                     &mut status_color,
@@ -512,17 +470,9 @@ fn run_ide_loop(
                                 textarea = textarea_from_source("");
                                 editor_view = EditorView::default();
                                 dirty = false;
-                                console_output.clear();
-                                console_output.push(String::from("New program."));
                                 status_msg = String::from("New program");
                                 status_color = Color::Green;
                             }
-                        }
-                        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            console_output.clear();
-                            console_output.push(String::from("Console cleared."));
-                            status_msg = String::from("Console cleared");
-                            status_color = Color::Green;
                         }
                         KeyCode::Char('c') | KeyCode::Char('C')
                             if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -1035,11 +985,10 @@ fn footer_text(app_state: &AppState, status_msg: &str) -> String {
     match app_state {
         AppState::PromptingSave(input) => format!("Save as: {}_", input),
         AppState::PromptingLoad(input) => format!("Open file: {}_", input),
-        AppState::RunningInput { prompt, input } => format!("{}{}_", prompt, input),
         AppState::ConfirmQuit(message) => message.clone(),
         AppState::ConfirmNew(message) => message.clone(),
         AppState::Editing => format!(
-            "{} | F5 Run  F6 Stop  F2 Save  F3 Open  Ctrl+L Clear  Esc Quit",
+            "{} | F5 Run  F6 Stop  F2 Save  F3 Open  Esc Quit",
             status_msg
         ),
     }
@@ -1048,7 +997,6 @@ fn footer_text(app_state: &AppState, status_msg: &str) -> String {
 fn footer_color(app_state: &AppState, status_color: Color) -> Color {
     match app_state {
         AppState::PromptingSave(_) | AppState::PromptingLoad(_) => Color::Yellow,
-        AppState::RunningInput { .. } => Color::Magenta,
         AppState::ConfirmQuit(_) => Color::Yellow,
         AppState::ConfirmNew(_) => Color::Yellow,
         AppState::Editing => status_color,
@@ -1113,7 +1061,6 @@ fn start_program(
     textarea: &TextArea<'static>,
     current_file: &Path,
     running_program: &mut Option<RunningProgram>,
-    console_output: &mut Vec<String>,
     is_running: &mut bool,
     status_msg: &mut String,
     status_color: &mut Color,
@@ -1144,10 +1091,7 @@ fn start_program(
             return;
         }
     };
-    let run_cwd = current_file
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let run_cwd = run_working_directory(current_file);
     let child = match spawn_program_window(&source_path, &run_cwd) {
         Ok(child) => child,
         Err(err) => {
@@ -1158,14 +1102,9 @@ fn start_program(
         }
     };
 
-    console_output.clear();
-    console_output.push(String::from("--- Program opened in a separate window ---"));
-    console_output.push(String::from(
-        "Close that window or press F6 here to stop it.",
-    ));
     *is_running = true;
     *running_program = Some(RunningProgram { child, source_path });
-    *status_msg = String::from("Running in separate window");
+    *status_msg = String::from("Running in separate window. Close it or press F6 to stop.");
     *status_color = Color::Cyan;
 }
 
@@ -1182,6 +1121,14 @@ fn write_run_source(source: &str) -> Result<PathBuf, String> {
     ));
     fs::write(&path, source).map_err(|err| err.to_string())?;
     Ok(path)
+}
+
+fn run_working_directory(current_file: &Path) -> PathBuf {
+    current_file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 fn spawn_program_window(source_path: &Path, run_cwd: &Path) -> Result<Child, String> {
@@ -1210,7 +1157,6 @@ fn poll_running_program(
     is_running: &mut bool,
     status_msg: &mut String,
     status_color: &mut Color,
-    console_output: &mut Vec<String>,
 ) {
     let Some(program) = running_program.as_mut() else {
         return;
@@ -1224,14 +1170,9 @@ fn poll_running_program(
             if status.success() {
                 *status_msg = String::from("Program finished");
                 *status_color = Color::Green;
-                push_console_line(console_output, String::from("--- Program finished ---"));
             } else {
                 *status_msg = format!("Program exited with {}", status);
                 *status_color = Color::Red;
-                push_console_line(
-                    console_output,
-                    format!("--- Program exited with {} ---", status),
-                );
             }
         }
         Ok(None) => {}
@@ -1437,5 +1378,56 @@ mod tests {
             source_with_auto_line_numbers(&lines),
             "10 PRINT \"HELLO\"\n20 GOTO 10\n100 PRINT \"EXPLICIT\"\n"
         );
+    }
+
+    #[test]
+    fn default_source_with_virtual_line_numbers_parses() {
+        let lines: Vec<String> = DEFAULT_SOURCE.lines().map(String::from).collect();
+        let source = source_with_auto_line_numbers(&lines);
+        let tokens = lexer::tokenize(&source).unwrap();
+        parser::parse(tokens).unwrap();
+    }
+
+    #[test]
+    fn virtual_line_numbers_parse_block_boundaries() {
+        let lines = vec![
+            "IF 1 THEN",
+            "PRINT \"A\"",
+            "ELSE",
+            "PRINT \"B\"",
+            "END IF",
+            "SELECT CASE 2",
+            "CASE 1",
+            "PRINT \"ONE\"",
+            "CASE ELSE",
+            "PRINT \"OTHER\"",
+            "END SELECT",
+            "WHILE 0",
+            "WEND",
+            "DO",
+            "LOOP",
+            "TYPE PAIR",
+            "LEFT AS INTEGER",
+            "RIGHT AS INTEGER",
+            "END TYPE",
+            "SUB DEMO()",
+            "PRINT \"DEMO\"",
+            "END SUB",
+            "FUNCTION VALUE()",
+            "VALUE = 1",
+            "END FUNCTION",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+        let source = source_with_auto_line_numbers(&lines);
+        let tokens = lexer::tokenize(&source).unwrap();
+        parser::parse(tokens).unwrap();
+    }
+
+    #[test]
+    fn relative_default_file_uses_process_working_directory_for_run() {
+        let cwd = env::current_dir().unwrap();
+        assert_eq!(run_working_directory(Path::new("main.bas")), cwd);
     }
 }

@@ -1,15 +1,15 @@
 # QBasic Studio
 
 QBasic Studio is a modern Rust terminal IDE and interpreter for a practical,
-QBasic-inspired BASIC dialect. It includes an editor, console, interactive
-input, file operations, command-line execution, syntax checking, simple graphics,
-and a CI/CD pipeline for reliable releases.
+QBasic-inspired BASIC dialect. It includes an editor, separate run window,
+interactive input, file operations, command-line execution, syntax checking,
+simple graphics, and a CI/CD pipeline for reliable releases.
 
 ## Highlights
 
 - Terminal IDE with BASIC-aware virtual line numbers, syntax highlighting,
-  status bar, console output, clipboard support, dirty-file tracking,
-  save/open/new workflows, and quit confirmation.
+  status bar, clipboard support, dirty-file tracking, save/open/new workflows,
+  and quit confirmation.
 - IDE runs open in a separate program window so a stuck or crashed BASIC program
   can be closed without taking the editor down.
 - Command-line modes for running programs and validating syntax in scripts or CI.
@@ -73,7 +73,6 @@ qbasic_interpreter edit [file]     Open the IDE, optionally with a file
 | `F12` | Save as |
 | `F3`, `Ctrl+O` | Open |
 | `Ctrl+N` | New program |
-| `Ctrl+L` | Clear console |
 | `Ctrl+C`, `Ctrl+X`, `Ctrl+V` | Copy, cut, paste |
 | `Esc`, `Ctrl+Q` | Quit, with confirmation when needed |
 
@@ -94,7 +93,7 @@ runtime behavior predictable:
   `RANDOMIZE`, `SLEEP`, `BEEP`, `SWAP`, `CLEAR`, `STOP`, `SYSTEM`.
 - File I/O: `OPEN`, `CLOSE`, `INPUT #`, `PRINT #`, `GET`, `PUT`, and random
   record access.
-- Console and graphics: `LOCATE`, `SCREEN`, `CLS`, `COLOR`, `PSET`, `LINE`,
+- Text positioning and graphics: `LOCATE`, `SCREEN`, `CLS`, `COLOR`, `PSET`, `LINE`,
   `CIRCLE`, `PAINT`.
 - Operators: arithmetic, integer division, exponentiation, comparison, logical
   operators, and string concatenation.
@@ -112,7 +111,7 @@ Function-like built-ins are called with parentheses, for example `RND()` and
 The `examples/` directory contains small programs that exercise the main
 features:
 
-- `hello.bas` - interactive console input.
+- `hello.bas` - interactive input.
 - `control_flow.bas` - loops, conditionals, and functions.
 - `data_read_restore.bas` - sequential data records and restore behavior.
 - `graphics.bas` - drawing commands for the IDE graphics window.

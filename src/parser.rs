@@ -270,6 +270,34 @@ impl Parser {
             self.advance();
         }
     }
+    fn same_token_kind(a: &Token, b: &Token) -> bool {
+        std::mem::discriminant(a) == std::mem::discriminant(b)
+    }
+    fn is_line_marker(token: &Token) -> bool {
+        matches!(token, Token::LineNumber(_) | Token::Label(_))
+    }
+    fn peek_after_line_markers(&self) -> &Token {
+        let mut offset = 0;
+        while Self::is_line_marker(self.peek_at(offset)) {
+            offset += 1;
+        }
+        self.peek_at(offset)
+    }
+    fn at_block_boundary(&self, boundaries: &[Token]) -> bool {
+        let token = if Self::is_line_marker(self.peek()) {
+            self.peek_after_line_markers()
+        } else {
+            self.peek()
+        };
+        boundaries
+            .iter()
+            .any(|boundary| Self::same_token_kind(token, boundary))
+    }
+    fn consume_line_markers(&mut self) {
+        while Self::is_line_marker(self.peek()) {
+            self.advance();
+        }
+    }
     fn consume_to_line_end(&mut self) {
         while !matches!(self.peek(), Token::Colon | Token::Newline | Token::Eof) {
             self.advance();
@@ -728,10 +756,8 @@ impl Parser {
             self.advance();
             loop {
                 self.skip_newlines();
-                if matches!(
-                    self.peek(),
-                    Token::Else | Token::ElseIf | Token::EndIf | Token::Eof
-                ) {
+                if self.at_block_boundary(&[Token::Else, Token::ElseIf, Token::EndIf, Token::Eof]) {
+                    self.consume_line_markers();
                     break;
                 }
                 then_branch.extend(self.parse_line()?);
@@ -748,10 +774,13 @@ impl Parser {
                 let mut block = Vec::new();
                 loop {
                     self.skip_newlines();
-                    if matches!(
-                        self.peek(),
-                        Token::Else | Token::ElseIf | Token::EndIf | Token::Eof
-                    ) {
+                    if self.at_block_boundary(&[
+                        Token::Else,
+                        Token::ElseIf,
+                        Token::EndIf,
+                        Token::Eof,
+                    ]) {
+                        self.consume_line_markers();
                         break;
                     }
                     block.extend(self.parse_line()?);
@@ -765,7 +794,8 @@ impl Parser {
                 }
                 loop {
                     self.skip_newlines();
-                    if matches!(self.peek(), Token::EndIf | Token::Eof) {
+                    if self.at_block_boundary(&[Token::EndIf, Token::Eof]) {
+                        self.consume_line_markers();
                         break;
                     }
                     else_branch.extend(self.parse_line()?);
@@ -821,14 +851,22 @@ impl Parser {
         self.skip_newlines();
         let mut cases = Vec::new();
         let mut else_branch = Vec::new();
-        while matches!(self.peek(), Token::Case) {
+        loop {
+            self.skip_newlines();
+            if self.at_block_boundary(&[Token::Case]) {
+                self.consume_line_markers();
+            }
+            if !matches!(self.peek(), Token::Case) {
+                break;
+            }
             self.advance();
             if matches!(self.peek(), Token::Else) {
                 self.advance();
                 self.skip_newlines();
                 loop {
                     self.skip_newlines();
-                    if matches!(self.peek(), Token::Case | Token::EndSelect | Token::Eof) {
+                    if self.at_block_boundary(&[Token::Case, Token::EndSelect, Token::Eof]) {
+                        self.consume_line_markers();
                         break;
                     }
                     else_branch.extend(self.parse_line()?);
@@ -871,12 +909,16 @@ impl Parser {
             let mut body = Vec::new();
             loop {
                 self.skip_newlines();
-                if matches!(self.peek(), Token::Case | Token::EndSelect | Token::Eof) {
+                if self.at_block_boundary(&[Token::Case, Token::EndSelect, Token::Eof]) {
+                    self.consume_line_markers();
                     break;
                 }
                 body.extend(self.parse_line()?);
             }
             cases.push((clauses, body));
+        }
+        if self.at_block_boundary(&[Token::EndSelect]) {
+            self.consume_line_markers();
         }
         if !self.matches(&Token::EndSelect) {
             return Err("Expected END SELECT".to_string());
@@ -919,7 +961,8 @@ impl Parser {
         let mut body = Vec::new();
         loop {
             self.skip_newlines();
-            if matches!(self.peek(), Token::Next | Token::Eof) {
+            if self.at_block_boundary(&[Token::Next, Token::Eof]) {
+                self.consume_line_markers();
                 break;
             }
             body.extend(self.parse_line()?);
@@ -944,7 +987,8 @@ impl Parser {
         let mut body = Vec::new();
         loop {
             self.skip_newlines();
-            if matches!(self.peek(), Token::Wend | Token::Eof) {
+            if self.at_block_boundary(&[Token::Wend, Token::Eof]) {
+                self.consume_line_markers();
                 break;
             }
             body.extend(self.parse_line()?);
@@ -967,7 +1011,8 @@ impl Parser {
         let mut body = Vec::new();
         loop {
             self.skip_newlines();
-            if matches!(self.peek(), Token::Loop | Token::Eof) {
+            if self.at_block_boundary(&[Token::Loop, Token::Eof]) {
+                self.consume_line_markers();
                 break;
             }
             body.extend(self.parse_line()?);
@@ -1240,9 +1285,11 @@ impl Parser {
         let mut fields = Vec::new();
         loop {
             self.skip_newlines();
-            if matches!(self.peek(), Token::EndType | Token::Eof) {
+            if self.at_block_boundary(&[Token::EndType, Token::Eof]) {
+                self.consume_line_markers();
                 break;
             }
+            self.consume_line_markers();
             let fname = match self.advance() {
                 Token::Identifier(n) => n,
                 t => return Err(format!("Expected field name, got {:?}", t)),
@@ -1290,7 +1337,8 @@ impl Parser {
         let mut body = Vec::new();
         loop {
             self.skip_newlines();
-            if matches!(self.peek(), Token::EndSub | Token::Eof) {
+            if self.at_block_boundary(&[Token::EndSub, Token::Eof]) {
+                self.consume_line_markers();
                 break;
             }
             body.extend(self.parse_line()?);
@@ -1331,7 +1379,8 @@ impl Parser {
         let mut body = Vec::new();
         loop {
             self.skip_newlines();
-            if matches!(self.peek(), Token::EndFunction | Token::Eof) {
+            if self.at_block_boundary(&[Token::EndFunction, Token::Eof]) {
+                self.consume_line_markers();
                 break;
             }
             body.extend(self.parse_line()?);
