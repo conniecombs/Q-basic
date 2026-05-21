@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::graphics::{qb_color, SharedGraphics};
 use crate::parser::{
-    infer_type_from_suffix, BinOp, CaseClause, DimDecl, Expr, FileMode, LValue, Param, PrintItem,
-    Program, Stmt, VarType,
+    infer_type_from_suffix, BinOp, CaseClause, DataItem, DimDecl, Expr, FileMode, LValue, Param,
+    PrintItem, Program, Stmt, VarType,
 };
 
 #[derive(Debug, Clone)]
@@ -123,6 +123,9 @@ pub struct Interpreter {
     pub subs: HashMap<String, SubInfo>,
     pub types: HashMap<String, Vec<(String, VarType)>>,
     pub constants: HashMap<String, Value>,
+    pub data_values: Vec<Value>,
+    pub data_ptr: usize,
+    pub data_labels: HashMap<String, usize>,
     pub scopes: Vec<Scope>,
     pub files: HashMap<u32, FileEntry>,
     pub gosub_stack: Vec<usize>,
@@ -146,6 +149,9 @@ pub fn run(
         subs: HashMap::new(),
         types: HashMap::new(),
         constants: HashMap::new(),
+        data_values: Vec::new(),
+        data_ptr: 0,
+        data_labels: HashMap::new(),
         scopes: vec![Scope::new()],
         files: HashMap::new(),
         gosub_stack: Vec::new(),
@@ -196,9 +202,20 @@ pub fn run(
         match s {
             Stmt::Label(n) => {
                 interp.labels.insert(n.clone(), i);
+                interp
+                    .data_labels
+                    .insert(n.clone(), interp.data_values.len());
             }
             Stmt::LineNumber(n) => {
                 interp.labels.insert(format!("{}", n), i);
+                interp
+                    .data_labels
+                    .insert(format!("{}", n), interp.data_values.len());
+            }
+            Stmt::Data(items) => {
+                interp
+                    .data_values
+                    .extend(items.iter().map(data_item_to_value));
             }
             _ => {}
         }
@@ -318,9 +335,11 @@ impl Interpreter {
         }
 
         match stmt {
-            Stmt::LineNumber(_) | Stmt::Label(_) | Stmt::Const(_, _) | Stmt::TypeDef(_, _) => {
-                Ok(Flow::Normal)
-            }
+            Stmt::LineNumber(_)
+            | Stmt::Label(_)
+            | Stmt::Const(_, _)
+            | Stmt::TypeDef(_, _)
+            | Stmt::Data(_) => Ok(Flow::Normal),
             Stmt::Print(handle, items) => self.do_print(*handle, items),
             Stmt::Let(lv, expr) => {
                 let v = self.eval(expr)?;
@@ -451,6 +470,11 @@ impl Interpreter {
                 for d in decls {
                     self.do_dim(d)?;
                 }
+                Ok(Flow::Normal)
+            }
+            Stmt::Read(vars) => self.do_read(vars),
+            Stmt::Restore(target) => {
+                self.do_restore(target.as_deref())?;
                 Ok(Flow::Normal)
             }
             Stmt::SubDef { .. } | Stmt::FuncDef { .. } => Ok(Flow::Normal),
@@ -642,6 +666,13 @@ impl Interpreter {
                 g.paint(xv, yv, fv, bv);
                 Ok(Flow::Normal)
             }
+            Stmt::Randomize(seed) => {
+                self.rng_state = match seed {
+                    Some(expr) => seed_from_number(self.eval(expr)?.as_number()?),
+                    None => seed_from_time(),
+                };
+                Ok(Flow::Normal)
+            }
             Stmt::Sleep(arg) => {
                 let secs = match arg {
                     Some(e) => self.eval(e)?.as_number()? as u64,
@@ -701,6 +732,28 @@ impl Interpreter {
             };
             self.set_var(&d.name, Value::Array(arr))?;
         }
+        Ok(())
+    }
+    fn do_read(&mut self, vars: &[LValue]) -> Result<Flow, String> {
+        for lv in vars {
+            let value = self
+                .data_values
+                .get(self.data_ptr)
+                .cloned()
+                .ok_or_else(|| "READ past end of DATA".to_string())?;
+            self.data_ptr += 1;
+            self.assign(lv, value)?;
+        }
+        Ok(Flow::Normal)
+    }
+    fn do_restore(&mut self, target: Option<&str>) -> Result<(), String> {
+        self.data_ptr = match target {
+            Some(label) => *self
+                .data_labels
+                .get(label)
+                .ok_or_else(|| format!("RESTORE target '{}' does not exist", label))?,
+            None => 0,
+        };
         Ok(())
     }
     fn exec_block(&mut self, body: &[Stmt]) -> Result<Flow, String> {
@@ -1150,6 +1203,11 @@ impl Interpreter {
             "ABS" => Value::Number(number_arg(&av, 0, "ABS")?.abs()),
             "SQR" => Value::Number(number_arg(&av, 0, "SQR")?.sqrt()),
             "RND" => {
+                if let Some(Value::Number(seed)) = av.first() {
+                    if *seed < 0.0 {
+                        self.rng_state = seed_from_number(*seed);
+                    }
+                }
                 let mut x = self.rng_state;
                 x ^= x << 13;
                 x ^= x >> 7;
@@ -1289,7 +1347,7 @@ impl Interpreter {
             }
         }
         let mut new_scope = Scope::new();
-        for (p, v) in info.params.iter().zip(arg_values.into_iter()) {
+        for (p, v) in info.params.iter().zip(arg_values) {
             let coerced = if p.vtype.is_string() {
                 Value::Str(v.as_string()?)
             } else if matches!(v, Value::Record(_) | Value::Array(_)) {
@@ -1342,6 +1400,34 @@ fn arg<'a>(values: &'a [Value], idx: usize, name: &str) -> Result<&'a Value, Str
     values
         .get(idx)
         .ok_or_else(|| format!("{}: missing argument {}", name, idx + 1))
+}
+
+fn data_item_to_value(item: &DataItem) -> Value {
+    match item {
+        DataItem::Number(n) => Value::Number(*n),
+        DataItem::Str(s) => Value::Str(s.clone()),
+    }
+}
+
+fn seed_from_number(seed: f64) -> u64 {
+    let mixed = seed.to_bits() ^ 0x9E37_79B9_7F4A_7C15;
+    if mixed == 0 {
+        0x1234_5678
+    } else {
+        mixed
+    }
+}
+
+fn seed_from_time() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x1234_5678);
+    if nanos == 0 {
+        0x1234_5678
+    } else {
+        nanos
+    }
 }
 
 fn number_arg(values: &[Value], idx: usize, name: &str) -> Result<f64, String> {
@@ -1613,5 +1699,31 @@ mod tests {
     fn for_loop_cannot_use_constant_counter() {
         let err = run_source("CONST X = 1\nFOR X = 1 TO 3\nNEXT X\n", &[]).unwrap_err();
         assert!(err.contains("Cannot assign to constant"));
+    }
+
+    #[test]
+    fn read_consumes_data_and_restore_rewinds() {
+        let lines = run_source(
+            "DATA 10, \"ADA\"\nREAD N, NAME$\nPRINT N; \":\"; NAME$\nRESTORE\nREAD AGAIN\nPRINT AGAIN\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["10:ADA", "10"]);
+    }
+
+    #[test]
+    fn restore_can_target_line_number() {
+        let lines = run_source(
+            "10 DATA 1\n20 DATA 2\nREAD A\nRESTORE 20\nREAD B\nPRINT A; \",\"; B\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["1,2"]);
+    }
+
+    #[test]
+    fn read_past_data_returns_error() {
+        let err = run_source("DATA 1\nREAD A, B\n", &[]).unwrap_err();
+        assert!(err.contains("READ past end of DATA"));
     }
 }

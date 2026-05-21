@@ -27,6 +27,9 @@ pub enum Token {
     End,
     Rem,
     Dim,
+    Data,
+    Read,
+    Restore,
     As,
     Integer,
     Single,
@@ -70,6 +73,7 @@ pub enum Token {
     Or,
     Not,
     Xor,
+    Randomize,
     Sleep,
     Equals,
     Plus,
@@ -213,6 +217,9 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     "GOSUB" => tokens.push(Token::Gosub),
                     "RETURN" => tokens.push(Token::Return),
                     "DIM" => tokens.push(Token::Dim),
+                    "DATA" => tokens.push(Token::Data),
+                    "READ" => tokens.push(Token::Read),
+                    "RESTORE" => tokens.push(Token::Restore),
                     "AS" => tokens.push(Token::As),
                     "INTEGER" => tokens.push(Token::Integer),
                     "LONG" => tokens.push(Token::Long),
@@ -251,6 +258,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     "OR" => tokens.push(Token::Or),
                     "NOT" => tokens.push(Token::Not),
                     "XOR" => tokens.push(Token::Xor),
+                    "RANDOMIZE" => tokens.push(Token::Randomize),
                     "SLEEP" => tokens.push(Token::Sleep),
                     "END" => {
                         let mut j = i;
@@ -394,6 +402,9 @@ fn is_keyword(s: &str) -> bool {
             | "END"
             | "REM"
             | "DIM"
+            | "DATA"
+            | "READ"
+            | "RESTORE"
             | "AS"
             | "INTEGER"
             | "LONG"
@@ -432,6 +443,7 @@ fn is_keyword(s: &str) -> bool {
             | "OR"
             | "NOT"
             | "XOR"
+            | "RANDOMIZE"
             | "SLEEP"
     )
 }

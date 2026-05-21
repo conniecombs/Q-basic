@@ -1,0 +1,170 @@
+# QBasic Studio
+
+QBasic Studio is a modern Rust terminal IDE and interpreter for a practical,
+QBasic-inspired BASIC dialect. It includes an editor, console, interactive
+input, file operations, command-line execution, syntax checking, simple graphics,
+and a CI/CD pipeline for reliable releases.
+
+## Highlights
+
+- Terminal IDE with line numbers, status bar, console output, clipboard support,
+  dirty-file tracking, save/open/new workflows, and quit confirmation.
+- Command-line modes for running programs and validating syntax in scripts or CI.
+- Interpreter support for variables, typed declarations, arrays, user-defined
+  records, constants, labels, line numbers, subroutines, functions, loops,
+  conditionals, `SELECT CASE`, `DATA`/`READ`/`RESTORE`, file I/O, and core
+  string/math functions.
+- Graphics support for common QBasic-style drawing commands through a separate
+  `minifb` window when running from the IDE.
+- Automated quality checks and tag-based release packaging for Windows, macOS,
+  and Linux through GitHub Actions.
+
+## Requirements
+
+- Rust stable toolchain.
+- A terminal that supports alternate-screen applications.
+- Linux graphics builds may require X11 development packages. The included
+  GitHub workflow installs them automatically on Ubuntu runners.
+
+## Quick Start
+
+```powershell
+cargo run
+```
+
+Run an example from the command line:
+
+```powershell
+cargo run -- run examples\control_flow.bas
+```
+
+Validate a file without executing it:
+
+```powershell
+cargo run -- check examples\data_read_restore.bas
+```
+
+Build an optimized binary:
+
+```powershell
+cargo build --release
+```
+
+## Command Line
+
+```text
+qbasic_interpreter                 Launch the terminal IDE
+qbasic_interpreter <file.bas>      Run a BASIC program
+qbasic_interpreter run <file.bas>  Run a BASIC program
+qbasic_interpreter check <file>    Parse and validate a program
+qbasic_interpreter edit [file]     Open the IDE, optionally with a file
+```
+
+## IDE Shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `F5`, `Ctrl+R` | Run the current program |
+| `F6` | Request program stop |
+| `F2`, `Ctrl+S` | Save |
+| `F12` | Save as |
+| `F3`, `Ctrl+O` | Open |
+| `Ctrl+N` | New program |
+| `Ctrl+L` | Clear console |
+| `Ctrl+C`, `Ctrl+X`, `Ctrl+V` | Copy, cut, paste |
+| `Esc`, `Ctrl+Q` | Quit, with confirmation when needed |
+
+## Language Support
+
+QBasic Studio focuses on the most useful parts of classic QBasic while keeping
+runtime behavior predictable:
+
+- Statements: `PRINT`, `LET`, `INPUT`, `IF/THEN/ELSE`, `SELECT CASE`,
+  `FOR/NEXT`, `WHILE/WEND`, `DO/LOOP`, `GOTO`, `GOSUB`, `RETURN`, `END`,
+  `EXIT`, `DIM`, `CONST`, `TYPE`, `SUB`, `FUNCTION`, `CALL`, `DATA`, `READ`,
+  `RESTORE`, `RANDOMIZE`, `SLEEP`.
+- File I/O: `OPEN`, `CLOSE`, `INPUT #`, `PRINT #`, `GET`, `PUT`, and random
+  record access.
+- Graphics: `SCREEN`, `CLS`, `COLOR`, `PSET`, `LINE`, `CIRCLE`, `PAINT`.
+- Operators: arithmetic, integer division, exponentiation, comparison, logical
+  operators, and string concatenation.
+- Built-ins: `LEN`, `MID$`, `LEFT$`, `RIGHT$`, `INT`, `ABS`, `SQR`, `RND`,
+  `STR$`, `VAL`, `CHR$`, `ASC`, `UCASE$`, `LCASE$`, `INSTR`, `SIN`, `COS`,
+  `TAN`, `ATN`, `LOG`, `EXP`, `SGN`, `TIMER`, `SPACE$`, `STRING$`, `HEX$`,
+  and `OCT$`.
+
+Function-like built-ins are called with parentheses, for example `RND()` and
+`TIMER()`.
+
+## Examples
+
+The `examples/` directory contains small programs that exercise the main
+features:
+
+- `hello.bas` - interactive console input.
+- `control_flow.bas` - loops, conditionals, and functions.
+- `data_read_restore.bas` - sequential data records and restore behavior.
+- `graphics.bas` - drawing commands for the IDE graphics window.
+
+## Development
+
+Use the same commands locally that CI runs:
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+```
+
+Format code before committing:
+
+```powershell
+cargo fmt
+```
+
+## CI/CD
+
+The workflow in `.github/workflows/ci-cd.yml` provides:
+
+- Pull request and branch checks on Windows, macOS, and Linux.
+- Rust formatting, clippy linting, unit tests, and example syntax validation.
+- Release builds for all three operating systems when a tag like `v0.3.1` is
+  pushed.
+- Packaged release archives with SHA-256 checksum files.
+- Automatic GitHub Release creation or asset replacement for version tags.
+
+Dependency maintenance is configured in `.github/dependabot.yml` for Cargo and
+GitHub Actions updates.
+
+## Release Process
+
+1. Update `Cargo.toml` with the next version.
+2. Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and
+   `cargo test --all-targets`.
+3. Commit the change and push it.
+4. Create and push a version tag:
+
+```powershell
+git tag v0.3.1
+git push origin v0.3.1
+```
+
+GitHub Actions will build and publish the release assets automatically.
+
+## Project Structure
+
+```text
+src/main.rs         CLI and terminal IDE
+src/lexer.rs        Tokenizer for the BASIC dialect
+src/parser.rs       AST and parser
+src/interpreter.rs  Runtime evaluator and tests
+src/graphics.rs     Shared graphics buffer and drawing primitives
+examples/           Runnable BASIC sample programs
+.github/            CI/CD and dependency automation
+```
+
+## Notes
+
+This project is QBasic-inspired rather than a byte-for-byte clone of Microsoft
+QBasic. It aims to make classic BASIC programs pleasant to write, run, and test
+in a modern terminal workflow.

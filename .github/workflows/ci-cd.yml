@@ -1,0 +1,170 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*.*.*"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Quality (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux graphics dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --all-targets
+
+      - name: Validate examples
+        run: |
+          cargo run -- check examples/hello.bas
+          cargo run -- check examples/control_flow.bas
+          cargo run -- check examples/data_read_restore.bas
+          cargo run -- check examples/graphics.bas
+
+  release-build:
+    name: Package (${{ matrix.os }})
+    needs: quality
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux graphics dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package release asset
+        shell: pwsh
+        run: |
+          $packageName = "qbasic_interpreter-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}"
+          $packageDir = Join-Path "dist" $packageName
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+
+          $exeName = if ($IsWindows) { "qbasic_interpreter.exe" } else { "qbasic_interpreter" }
+          Copy-Item (Join-Path "target/release" $exeName) $packageDir
+          Copy-Item "README.md" $packageDir
+          Copy-Item -Recurse "examples" (Join-Path $packageDir "examples")
+
+          if ($IsWindows) {
+            $archivePath = Join-Path "dist" "$packageName.zip"
+            Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $archivePath -Force
+          } else {
+            $archivePath = Join-Path "dist" "$packageName.tar.gz"
+            tar -czf $archivePath -C $packageDir .
+          }
+
+          $archive = Get-Item $archivePath
+          $hash = Get-FileHash $archive.FullName -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $($archive.Name)" | Set-Content "$($archive.FullName).sha256"
+
+      - name: Upload packaged binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: release-build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-assets/* --clobber
+          else
+            gh release create "$TAG_NAME" release-assets/* \
+              --title "$TAG_NAME" \
+              --notes "Automated release for $TAG_NAME."
+          fi

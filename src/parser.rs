@@ -65,6 +65,12 @@ pub enum PrintItem {
 }
 
 #[derive(Debug, Clone)]
+pub enum DataItem {
+    Number(f64),
+    Str(String),
+}
+
+#[derive(Debug, Clone)]
 pub enum LValue {
     Var(String),
     Index(String, Vec<Expr>),
@@ -125,6 +131,9 @@ pub enum Stmt {
     Label(String),
     LineNumber(u32),
     Dim(Vec<DimDecl>),
+    Data(Vec<DataItem>),
+    Read(Vec<LValue>),
+    Restore(Option<String>),
     Const(String, Expr),
     TypeDef(String, Vec<(String, VarType)>),
     SubDef {
@@ -164,6 +173,7 @@ pub enum Stmt {
     Line(Option<(Expr, Expr)>, Expr, Expr, Option<Expr>, bool, bool),
     Circle(Expr, Expr, Expr, Option<Expr>),
     Paint(Expr, Expr, Option<Expr>, Option<Expr>),
+    Randomize(Option<Expr>),
     Sleep(Option<Expr>),
 }
 
@@ -412,6 +422,9 @@ impl Parser {
             }
             Token::Exit => self.parse_exit(),
             Token::Dim => self.parse_dim(),
+            Token::Data => self.parse_data(),
+            Token::Read => self.parse_read(),
+            Token::Restore => self.parse_restore(),
             Token::Const => self.parse_const(),
             Token::Type => self.parse_type_def(),
             Token::Sub => self.parse_sub(),
@@ -444,6 +457,7 @@ impl Parser {
             Token::Line => self.parse_line_stmt(),
             Token::Circle => self.parse_circle(),
             Token::Paint => self.parse_paint(),
+            Token::Randomize => self.parse_randomize(),
             Token::Sleep => {
                 self.advance();
                 let arg = if matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
@@ -992,6 +1006,74 @@ impl Parser {
         }
         Ok(Stmt::Dim(decls))
     }
+    fn parse_data(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        let mut items = Vec::new();
+        let mut expecting_value = true;
+        loop {
+            match self.peek().clone() {
+                Token::Newline | Token::Eof | Token::Colon => break,
+                Token::Comma => {
+                    self.advance();
+                    if expecting_value {
+                        items.push(DataItem::Str(String::new()));
+                    }
+                    expecting_value = true;
+                }
+                Token::StringLit(s) => {
+                    self.advance();
+                    items.push(DataItem::Str(s));
+                    expecting_value = false;
+                }
+                Token::Identifier(s) => {
+                    self.advance();
+                    items.push(DataItem::Str(s));
+                    expecting_value = false;
+                }
+                Token::Number(n) => {
+                    self.advance();
+                    items.push(DataItem::Number(n));
+                    expecting_value = false;
+                }
+                Token::Minus => {
+                    self.advance();
+                    match self.advance() {
+                        Token::Number(n) => {
+                            items.push(DataItem::Number(-n));
+                            expecting_value = false;
+                        }
+                        t => return Err(format!("Expected number after '-' in DATA, got {:?}", t)),
+                    }
+                }
+                t => return Err(format!("Unexpected token in DATA: {:?}", t)),
+            }
+        }
+        Ok(Stmt::Data(items))
+    }
+    fn parse_read(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        let mut vars = Vec::new();
+        loop {
+            let lv = self.parse_lvalue()?;
+            self.declare_lvalue_if_needed(&lv);
+            vars.push(lv);
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(Stmt::Read(vars))
+    }
+    fn parse_restore(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        let target = if matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+            None
+        } else {
+            Some(self.parse_goto_target()?)
+        };
+        Ok(Stmt::Restore(target))
+    }
     fn parse_const(&mut self) -> Result<Stmt, String> {
         self.advance();
         let name = match self.advance() {
@@ -1507,6 +1589,15 @@ impl Parser {
         }
         Ok(Stmt::Paint(x, y, color, border))
     }
+    fn parse_randomize(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        let seed = if matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        Ok(Stmt::Randomize(seed))
+    }
     fn parse_expr(&mut self) -> Result<Expr, String> {
         self.parse_or()
     }
@@ -1682,6 +1773,12 @@ impl Parser {
         if !self.var_types.contains_key(name) {
             self.var_types
                 .insert(name.to_string(), infer_type_from_suffix(name));
+        }
+    }
+    fn declare_lvalue_if_needed(&mut self, lv: &LValue) {
+        match lv {
+            LValue::Var(name) | LValue::Index(name, _) => self.declare_var_if_needed(name),
+            LValue::Field(parent, _) => self.declare_lvalue_if_needed(parent),
         }
     }
     fn lookup_var_type(&self, name: &str) -> VarType {
