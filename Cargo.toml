@@ -7,7 +7,7 @@ description = "A terminal IDE and interpreter for a practical QBasic-inspired BA
 
 [dependencies]
 minifb = "0.25"
-crossterm = "0.28"
+crossterm = "0.29"
 ratatui = "0.29"
 tui-textarea = "0.7"
 arboard = "3.4"
