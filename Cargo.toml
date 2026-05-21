@@ -1,0 +1,11 @@
+[package]
+name = "qbasic_interpreter"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+minifb = "0.25"
+crossterm = "0.28"
+ratatui = "0.29"
+tui-textarea = "0.7"
+arboard = "3.4"
