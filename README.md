@@ -7,8 +7,11 @@ and a CI/CD pipeline for reliable releases.
 
 ## Highlights
 
-- Terminal IDE with line numbers, status bar, console output, clipboard support,
-  dirty-file tracking, save/open/new workflows, and quit confirmation.
+- Terminal IDE with BASIC-aware virtual line numbers, syntax highlighting,
+  status bar, console output, clipboard support, dirty-file tracking,
+  save/open/new workflows, and quit confirmation.
+- IDE runs open in a separate program window so a stuck or crashed BASIC program
+  can be closed without taking the editor down.
 - Command-line modes for running programs and validating syntax in scripts or CI.
 - Interpreter support for variables, typed declarations, arrays, user-defined
   records, constants, labels, line numbers, subroutines, functions, loops,
@@ -64,8 +67,8 @@ qbasic_interpreter edit [file]     Open the IDE, optionally with a file
 
 | Shortcut | Action |
 | --- | --- |
-| `F5`, `Ctrl+R` | Run the current program |
-| `F6` | Request program stop |
+| `F5`, `Ctrl+R` | Run the current program in a separate window |
+| `F6` | Close the running program window |
 | `F2`, `Ctrl+S` | Save |
 | `F12` | Save as |
 | `F3`, `Ctrl+O` | Open |
@@ -74,24 +77,32 @@ qbasic_interpreter edit [file]     Open the IDE, optionally with a file
 | `Ctrl+C`, `Ctrl+X`, `Ctrl+V` | Copy, cut, paste |
 | `Esc`, `Ctrl+Q` | Quit, with confirmation when needed |
 
+The IDE gutter shows BASIC line numbers in increments of 10. When you run from
+the IDE, lines without an explicit BASIC number are executed with those virtual
+numbers, so targets like `GOTO 20` work without manually typing every number.
+
 ## Language Support
 
 QBasic Studio focuses on the most useful parts of classic QBasic while keeping
 runtime behavior predictable:
 
-- Statements: `PRINT`, `LET`, `INPUT`, `IF/THEN/ELSE`, `SELECT CASE`,
-  `FOR/NEXT`, `WHILE/WEND`, `DO/LOOP`, `GOTO`, `GOSUB`, `RETURN`, `END`,
-  `EXIT`, `DIM`, `CONST`, `TYPE`, `SUB`, `FUNCTION`, `CALL`, `DATA`, `READ`,
-  `RESTORE`, `RANDOMIZE`, `SLEEP`.
+- Statements: `PRINT`, `LET`, `INPUT`, `LINE INPUT`, `IF/THEN/ELSE`,
+  `SELECT CASE`, `FOR/NEXT`, `WHILE/WEND`, `DO/LOOP`, `GOTO`, `GOSUB`,
+  `ON ... GOTO/GOSUB`, `RETURN`, `END`, `EXIT`, `DIM`, `REDIM`, `ERASE`,
+  `CONST`, `TYPE`, `SUB`, `FUNCTION`, `DECLARE`, `CALL`, `DATA`, `READ`,
+  `RESTORE`, `OPTION BASE`, `DEFINT`/`DEFLNG`/`DEFSNG`/`DEFDBL`/`DEFSTR`,
+  `RANDOMIZE`, `SLEEP`, `BEEP`, `SWAP`, `CLEAR`, `STOP`, `SYSTEM`.
 - File I/O: `OPEN`, `CLOSE`, `INPUT #`, `PRINT #`, `GET`, `PUT`, and random
   record access.
-- Graphics: `SCREEN`, `CLS`, `COLOR`, `PSET`, `LINE`, `CIRCLE`, `PAINT`.
+- Console and graphics: `LOCATE`, `SCREEN`, `CLS`, `COLOR`, `PSET`, `LINE`,
+  `CIRCLE`, `PAINT`.
 - Operators: arithmetic, integer division, exponentiation, comparison, logical
   operators, and string concatenation.
-- Built-ins: `LEN`, `MID$`, `LEFT$`, `RIGHT$`, `INT`, `ABS`, `SQR`, `RND`,
-  `STR$`, `VAL`, `CHR$`, `ASC`, `UCASE$`, `LCASE$`, `INSTR`, `SIN`, `COS`,
-  `TAN`, `ATN`, `LOG`, `EXP`, `SGN`, `TIMER`, `SPACE$`, `STRING$`, `HEX$`,
-  and `OCT$`.
+- Built-ins: `LEN`, `MID$`, `LEFT$`, `RIGHT$`, `INT`, `FIX`, `ABS`, `SQR`,
+  `RND`, `STR$`, `CSTR$`, `VAL`, `CHR$`, `ASC`, `UCASE$`, `LCASE$`,
+  `LTRIM$`, `RTRIM$`, `TRIM$`, `INSTR`, `SIN`, `COS`, `TAN`, `ATN`, `LOG`,
+  `EXP`, `SGN`, `TIMER`, `SPACE$`, `SPC`, `TAB`, `STRING$`, `HEX$`, `OCT$`,
+  `CINT`, `CLNG`, `CSNG`, and `CDBL`.
 
 Function-like built-ins are called with parentheses, for example `RND()` and
 `TIMER()`.

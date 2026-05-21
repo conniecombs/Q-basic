@@ -30,6 +30,9 @@ pub enum Token {
     Data,
     Read,
     Restore,
+    Redim,
+    Preserve,
+    Erase,
     As,
     Integer,
     Single,
@@ -41,12 +44,22 @@ pub enum Token {
     EndSub,
     EndFunction,
     Call,
+    Declare,
     Exit,
     ByRef,
     ByVal,
+    Shared,
+    Static,
     Const,
     Type,
     EndType,
+    Option,
+    Base,
+    DefInt,
+    DefLng,
+    DefSng,
+    DefDbl,
+    DefStr,
     Select,
     Case,
     EndSelect,
@@ -68,6 +81,15 @@ pub enum Token {
     Cls,
     Window,
     Paint,
+    Locate,
+    Beep,
+    Swap,
+    Clear,
+    Stop,
+    System,
+    On,
+    Error,
+    Resume,
     Mod,
     And,
     Or,
@@ -220,6 +242,9 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     "DATA" => tokens.push(Token::Data),
                     "READ" => tokens.push(Token::Read),
                     "RESTORE" => tokens.push(Token::Restore),
+                    "REDIM" => tokens.push(Token::Redim),
+                    "PRESERVE" => tokens.push(Token::Preserve),
+                    "ERASE" => tokens.push(Token::Erase),
                     "AS" => tokens.push(Token::As),
                     "INTEGER" => tokens.push(Token::Integer),
                     "LONG" => tokens.push(Token::Long),
@@ -229,11 +254,21 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     "SUB" => tokens.push(Token::Sub),
                     "FUNCTION" => tokens.push(Token::Function),
                     "CALL" => tokens.push(Token::Call),
+                    "DECLARE" => tokens.push(Token::Declare),
                     "EXIT" => tokens.push(Token::Exit),
                     "BYREF" => tokens.push(Token::ByRef),
                     "BYVAL" => tokens.push(Token::ByVal),
+                    "SHARED" => tokens.push(Token::Shared),
+                    "STATIC" => tokens.push(Token::Static),
                     "CONST" => tokens.push(Token::Const),
                     "TYPE" => tokens.push(Token::Type),
+                    "OPTION" => tokens.push(Token::Option),
+                    "BASE" => tokens.push(Token::Base),
+                    "DEFINT" => tokens.push(Token::DefInt),
+                    "DEFLNG" => tokens.push(Token::DefLng),
+                    "DEFSNG" => tokens.push(Token::DefSng),
+                    "DEFDBL" => tokens.push(Token::DefDbl),
+                    "DEFSTR" => tokens.push(Token::DefStr),
                     "SELECT" => tokens.push(Token::Select),
                     "CASE" => tokens.push(Token::Case),
                     "IS" => tokens.push(Token::Is),
@@ -253,6 +288,15 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     "CLS" => tokens.push(Token::Cls),
                     "WINDOW" => tokens.push(Token::Window),
                     "PAINT" => tokens.push(Token::Paint),
+                    "LOCATE" => tokens.push(Token::Locate),
+                    "BEEP" => tokens.push(Token::Beep),
+                    "SWAP" => tokens.push(Token::Swap),
+                    "CLEAR" => tokens.push(Token::Clear),
+                    "STOP" => tokens.push(Token::Stop),
+                    "SYSTEM" => tokens.push(Token::System),
+                    "ON" => tokens.push(Token::On),
+                    "ERROR" => tokens.push(Token::Error),
+                    "RESUME" => tokens.push(Token::Resume),
                     "MOD" => tokens.push(Token::Mod),
                     "AND" => tokens.push(Token::And),
                     "OR" => tokens.push(Token::Or),
@@ -405,6 +449,9 @@ fn is_keyword(s: &str) -> bool {
             | "DATA"
             | "READ"
             | "RESTORE"
+            | "REDIM"
+            | "PRESERVE"
+            | "ERASE"
             | "AS"
             | "INTEGER"
             | "LONG"
@@ -414,11 +461,21 @@ fn is_keyword(s: &str) -> bool {
             | "SUB"
             | "FUNCTION"
             | "CALL"
+            | "DECLARE"
             | "EXIT"
             | "BYREF"
             | "BYVAL"
+            | "SHARED"
+            | "STATIC"
             | "CONST"
             | "TYPE"
+            | "OPTION"
+            | "BASE"
+            | "DEFINT"
+            | "DEFLNG"
+            | "DEFSNG"
+            | "DEFDBL"
+            | "DEFSTR"
             | "SELECT"
             | "CASE"
             | "IS"
@@ -438,6 +495,15 @@ fn is_keyword(s: &str) -> bool {
             | "CLS"
             | "WINDOW"
             | "PAINT"
+            | "LOCATE"
+            | "BEEP"
+            | "SWAP"
+            | "CLEAR"
+            | "STOP"
+            | "SYSTEM"
+            | "ON"
+            | "ERROR"
+            | "RESUME"
             | "MOD"
             | "AND"
             | "OR"

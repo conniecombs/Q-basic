@@ -128,6 +128,7 @@ pub struct Interpreter {
     pub data_labels: HashMap<String, usize>,
     pub scopes: Vec<Scope>,
     pub files: HashMap<u32, FileEntry>,
+    pub default_types: Vec<(char, char, VarType)>,
     pub gosub_stack: Vec<usize>,
     pub rng_state: u64,
     pub console_tx: Sender<ConsoleMsg>,
@@ -154,6 +155,7 @@ pub fn run(
         data_labels: HashMap::new(),
         scopes: vec![Scope::new()],
         files: HashMap::new(),
+        default_types: Vec::new(),
         gosub_stack: Vec::new(),
         rng_state: 0x12345678,
         console_tx,
@@ -274,6 +276,22 @@ impl Interpreter {
     fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().unwrap()
     }
+    fn infer_runtime_type(&self, name: &str) -> VarType {
+        let suffixed = infer_type_from_suffix(name);
+        if !matches!(suffixed, VarType::Single) || name.ends_with('!') {
+            return suffixed;
+        }
+        let Some(first) = name.chars().find(|c| c.is_ascii_alphabetic()) else {
+            return suffixed;
+        };
+        let first = first.to_ascii_uppercase();
+        self.default_types
+            .iter()
+            .rev()
+            .find(|(start, end, _)| first >= *start && first <= *end)
+            .map(|(_, _, vt)| vt.clone())
+            .unwrap_or(suffixed)
+    }
     fn get_var(&self, name: &str) -> Value {
         if let Some(v) = self.constants.get(name) {
             return v.clone();
@@ -286,7 +304,7 @@ impl Interpreter {
                 return v.clone();
             }
         }
-        let t = infer_type_from_suffix(name);
+        let t = self.infer_runtime_type(name);
         if t.is_string() {
             Value::Str(String::new())
         } else {
@@ -338,8 +356,15 @@ impl Interpreter {
             Stmt::LineNumber(_)
             | Stmt::Label(_)
             | Stmt::Const(_, _)
+            | Stmt::Noop
             | Stmt::TypeDef(_, _)
             | Stmt::Data(_) => Ok(Flow::Normal),
+            Stmt::DefType(vtype, ranges) => {
+                for (start, end) in ranges {
+                    self.default_types.push((*start, *end, vtype.clone()));
+                }
+                Ok(Flow::Normal)
+            }
             Stmt::Print(handle, items) => self.do_print(*handle, items),
             Stmt::Let(lv, expr) => {
                 let v = self.eval(expr)?;
@@ -469,6 +494,21 @@ impl Interpreter {
             Stmt::Dim(decls) => {
                 for d in decls {
                     self.do_dim(d)?;
+                }
+                Ok(Flow::Normal)
+            }
+            Stmt::Redim(decls) => {
+                for d in decls {
+                    self.do_dim(d)?;
+                }
+                Ok(Flow::Normal)
+            }
+            Stmt::Erase(names) => {
+                for name in names {
+                    self.current_scope_mut().vars.remove(name);
+                    if self.scopes.len() > 1 {
+                        self.scopes[0].vars.remove(name);
+                    }
                 }
                 Ok(Flow::Normal)
             }
@@ -665,6 +705,57 @@ impl Interpreter {
                 let mut g = self.graphics.lock().unwrap();
                 g.paint(xv, yv, fv, bv);
                 Ok(Flow::Normal)
+            }
+            Stmt::Locate(row, col) => {
+                let r = match row {
+                    Some(e) => self.eval(e)?.as_number()? as u32,
+                    None => 1,
+                };
+                let c = match col {
+                    Some(e) => self.eval(e)?.as_number()? as u32,
+                    None => 1,
+                };
+                let _ = self.console_tx.send(ConsoleMsg::Print {
+                    text: format!("\x1B[{};{}H", r.max(1), c.max(1)),
+                    newline: false,
+                });
+                Ok(Flow::Normal)
+            }
+            Stmt::Beep => {
+                let _ = self.console_tx.send(ConsoleMsg::Print {
+                    text: "\x07".to_string(),
+                    newline: false,
+                });
+                Ok(Flow::Normal)
+            }
+            Stmt::Swap(left, right) => {
+                let lv = self.read_lvalue(left)?;
+                let rv = self.read_lvalue(right)?;
+                self.assign(left, rv)?;
+                self.assign(right, lv)?;
+                Ok(Flow::Normal)
+            }
+            Stmt::Clear => {
+                self.current_scope_mut().vars.clear();
+                Ok(Flow::Normal)
+            }
+            Stmt::Stop | Stmt::System => Ok(Flow::End),
+            Stmt::OnJump {
+                selector,
+                targets,
+                is_gosub,
+            } => {
+                let idx = self.eval(selector)?.as_number()? as isize;
+                if idx < 1 || idx as usize > targets.len() {
+                    Ok(Flow::Normal)
+                } else {
+                    let target = targets[idx as usize - 1].clone();
+                    if *is_gosub {
+                        Ok(Flow::Gosub(target, 0))
+                    } else {
+                        Ok(Flow::Goto(target))
+                    }
+                }
             }
             Stmt::Randomize(seed) => {
                 self.rng_state = match seed {
@@ -866,7 +957,7 @@ impl Interpreter {
             LValue::Var(n) => self
                 .get_var_ref(n)
                 .map(|v| runtime_type_for_value(n, v))
-                .unwrap_or_else(|| infer_type_from_suffix(n)),
+                .unwrap_or_else(|| self.infer_runtime_type(n)),
             LValue::Index(n, _) => {
                 if let Some(Value::Array(a)) = self
                     .current_scope()
@@ -876,7 +967,7 @@ impl Interpreter {
                 {
                     a.element_type.clone()
                 } else {
-                    infer_type_from_suffix(n)
+                    self.infer_runtime_type(n)
                 }
             }
             LValue::Field(parent, fname) => self
@@ -889,7 +980,7 @@ impl Interpreter {
                         .map(|(field_name, value)| runtime_type_for_value(field_name, value)),
                     _ => None,
                 })
-                .unwrap_or_else(|| infer_type_from_suffix(fname)),
+                .unwrap_or_else(|| self.infer_runtime_type(fname)),
         }
     }
     fn peek_lvalue_value<'a>(&'a self, lv: &LValue) -> Option<&'a Value> {
@@ -913,7 +1004,8 @@ impl Interpreter {
                     return Err(format!("Cannot assign to constant '{}'", n));
                 }
                 let existing = self.get_var_ref(n).cloned();
-                let coerced = coerce_to_existing_shape(n, existing.as_ref(), v)?;
+                let inferred = self.infer_runtime_type(n);
+                let coerced = coerce_to_existing_shape(n, existing.as_ref(), v, &inferred)?;
                 self.set_var(n, coerced)?;
                 Ok(())
             }
@@ -959,7 +1051,8 @@ impl Interpreter {
                     for (fn_, fv) in rec.fields.iter_mut() {
                         if fn_.eq_ignore_ascii_case(fname) {
                             let existing = fv.clone();
-                            *fv = coerce_to_existing_shape(fn_, Some(&existing), v)?;
+                            let inferred = infer_type_from_suffix(fn_);
+                            *fv = coerce_to_existing_shape(fn_, Some(&existing), v, &inferred)?;
                             return Ok(());
                         }
                     }
@@ -1200,6 +1293,7 @@ impl Interpreter {
                 Value::Str(chars[start..].iter().collect())
             }
             "INT" => Value::Number(number_arg(&av, 0, "INT")?.floor()),
+            "FIX" => Value::Number(number_arg(&av, 0, "FIX")?.trunc()),
             "ABS" => Value::Number(number_arg(&av, 0, "ABS")?.abs()),
             "SQR" => Value::Number(number_arg(&av, 0, "SQR")?.sqrt()),
             "RND" => {
@@ -1224,6 +1318,11 @@ impl Interpreter {
                 };
                 Value::Str(s)
             }
+            "CSTR$" | "CSTR" => {
+                Value::Str(Value::Number(number_arg(&av, 0, "CSTR$")?).to_display())
+            }
+            "CINT" | "CLNG" => Value::Number(number_arg(&av, 0, name)?.round()),
+            "CSNG" | "CDBL" => Value::Number(number_arg(&av, 0, name)?),
             "VAL" => {
                 let s = string_arg(&av, 0, "VAL")?;
                 let trimmed = s.trim();
@@ -1265,6 +1364,11 @@ impl Interpreter {
             }
             "UCASE$" => Value::Str(string_arg(&av, 0, "UCASE$")?.to_uppercase()),
             "LCASE$" => Value::Str(string_arg(&av, 0, "LCASE$")?.to_lowercase()),
+            "LTRIM$" | "LTRIM" => {
+                Value::Str(string_arg(&av, 0, "LTRIM$")?.trim_start().to_string())
+            }
+            "RTRIM$" | "RTRIM" => Value::Str(string_arg(&av, 0, "RTRIM$")?.trim_end().to_string()),
+            "TRIM$" | "TRIM" => Value::Str(string_arg(&av, 0, "TRIM$")?.trim().to_string()),
             "INSTR" => {
                 let h = string_arg(&av, 0, "INSTR")?;
                 let n = string_arg(&av, 1, "INSTR")?;
@@ -1297,6 +1401,10 @@ impl Interpreter {
             }
             "SPACE$" => {
                 let n = count_arg(&av, 0, "SPACE$")?;
+                Value::Str(" ".repeat(n))
+            }
+            "SPC" | "TAB" => {
+                let n = count_arg(&av, 0, name)?;
                 Value::Str(" ".repeat(n))
             }
             "STRING$" => {
@@ -1471,6 +1579,7 @@ fn coerce_to_existing_shape(
     name: &str,
     existing: Option<&Value>,
     v: Value,
+    inferred_type: &VarType,
 ) -> Result<Value, String> {
     match existing {
         Some(Value::Str(_)) => Ok(Value::Str(v.as_string()?)),
@@ -1489,7 +1598,7 @@ fn coerce_to_existing_shape(
                 Err("Type mismatch: expected array".to_string())
             }
         }
-        None if name.ends_with('$') => Ok(Value::Str(v.as_string()?)),
+        None if name.ends_with('$') || inferred_type.is_string() => Ok(Value::Str(v.as_string()?)),
         None if matches!(v, Value::Record(_) | Value::Array(_)) => Ok(v),
         None => Ok(Value::Number(v.as_number()?)),
     }
@@ -1725,5 +1834,21 @@ mod tests {
     fn read_past_data_returns_error() {
         let err = run_source("DATA 1\nREAD A, B\n", &[]).unwrap_err();
         assert!(err.contains("READ past end of DATA"));
+    }
+
+    #[test]
+    fn common_classic_basic_syntax_runs() {
+        let lines = run_source(
+            "OPTION BASE 1\nDEFINT A-Z\nDECLARE SUB IGNORED()\nREDIM A(2)\nA(1) = 10\nA(2) = 20\nSWAP A(1), A(2)\nPRINT A(1); \",\"; A(2)\nN = 2\nON N GOTO 100, 200\n100 PRINT \"WRONG\": END\n200 LINE INPUT \"Name\"; NAME$\nPRINT NAME$\n",
+            &["Ada, Lovelace"],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["20,10", "Ada, Lovelace"]);
+    }
+
+    #[test]
+    fn defstr_sets_default_string_variables() {
+        let lines = run_source("DEFSTR A-Z\nA = \"OK\"\nPRINT A\n", &[]).unwrap();
+        assert_eq!(lines, vec!["OK"]);
     }
 }

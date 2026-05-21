@@ -134,7 +134,11 @@ pub enum Stmt {
     Data(Vec<DataItem>),
     Read(Vec<LValue>),
     Restore(Option<String>),
+    Redim(Vec<DimDecl>),
+    Erase(Vec<String>),
     Const(String, Expr),
+    Noop,
+    DefType(VarType, Vec<(char, char)>),
     TypeDef(String, Vec<(String, VarType)>),
     SubDef {
         name: String,
@@ -173,6 +177,17 @@ pub enum Stmt {
     Line(Option<(Expr, Expr)>, Expr, Expr, Option<Expr>, bool, bool),
     Circle(Expr, Expr, Expr, Option<Expr>),
     Paint(Expr, Expr, Option<Expr>, Option<Expr>),
+    Locate(Option<Expr>, Option<Expr>),
+    Beep,
+    Swap(LValue, LValue),
+    Clear,
+    Stop,
+    System,
+    OnJump {
+        selector: Expr,
+        targets: Vec<String>,
+        is_gosub: bool,
+    },
     Randomize(Option<Expr>),
     Sleep(Option<Expr>),
 }
@@ -204,6 +219,7 @@ pub fn parse(tokens: Vec<Token>) -> Result<Program, String> {
         type_defs: HashMap::new(),
         constants: HashMap::new(),
         sub_sigs: HashMap::new(),
+        default_types: Vec::new(),
     };
     Ok(Program {
         stmts: p.parse_program()?,
@@ -217,6 +233,7 @@ struct Parser {
     type_defs: HashMap<String, Vec<(String, VarType)>>,
     constants: HashMap<String, VarType>,
     sub_sigs: HashMap<String, (Vec<Param>, bool, VarType)>,
+    default_types: Vec<(char, char, VarType)>,
 }
 
 impl Parser {
@@ -250,6 +267,11 @@ impl Parser {
     }
     fn skip_newlines(&mut self) {
         while matches!(self.peek(), Token::Newline) {
+            self.advance();
+        }
+    }
+    fn consume_to_line_end(&mut self) {
+        while !matches!(self.peek(), Token::Colon | Token::Newline | Token::Eof) {
             self.advance();
         }
     }
@@ -422,14 +444,22 @@ impl Parser {
             }
             Token::Exit => self.parse_exit(),
             Token::Dim => self.parse_dim(),
+            Token::Redim => self.parse_redim(),
+            Token::Erase => self.parse_erase(),
             Token::Data => self.parse_data(),
             Token::Read => self.parse_read(),
             Token::Restore => self.parse_restore(),
             Token::Const => self.parse_const(),
+            Token::Declare => self.parse_declare(),
+            Token::Option => self.parse_option(),
+            Token::DefInt | Token::DefLng | Token::DefSng | Token::DefDbl | Token::DefStr => {
+                self.parse_def_type()
+            }
             Token::Type => self.parse_type_def(),
             Token::Sub => self.parse_sub(),
             Token::Function => self.parse_function(),
             Token::Call => self.parse_call(),
+            Token::On => self.parse_on(),
             Token::Open => self.parse_open(),
             Token::Close => self.parse_close(),
             Token::Get => self.parse_get(),
@@ -454,9 +484,29 @@ impl Parser {
             }
             Token::Color => self.parse_color(),
             Token::Pset => self.parse_pset(),
+            Token::Line if matches!(self.peek_at(1), Token::Input) => self.parse_line_input(),
             Token::Line => self.parse_line_stmt(),
             Token::Circle => self.parse_circle(),
             Token::Paint => self.parse_paint(),
+            Token::Locate => self.parse_locate(),
+            Token::Beep => {
+                self.advance();
+                Ok(Stmt::Beep)
+            }
+            Token::Swap => self.parse_swap(),
+            Token::Clear => {
+                self.advance();
+                Ok(Stmt::Clear)
+            }
+            Token::Stop => {
+                self.advance();
+                Ok(Stmt::Stop)
+            }
+            Token::System => {
+                self.advance();
+                Ok(Stmt::System)
+            }
+            Token::Resume => self.parse_resume(),
             Token::Randomize => self.parse_randomize(),
             Token::Sleep => {
                 self.advance();
@@ -953,6 +1003,19 @@ impl Parser {
     }
     fn parse_dim(&mut self) -> Result<Stmt, String> {
         self.advance();
+        if matches!(self.peek(), Token::Shared | Token::Static) {
+            self.advance();
+        }
+        self.parse_dim_decls().map(Stmt::Dim)
+    }
+    fn parse_redim(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        if matches!(self.peek(), Token::Preserve) {
+            self.advance();
+        }
+        self.parse_dim_decls().map(Stmt::Redim)
+    }
+    fn parse_dim_decls(&mut self) -> Result<Vec<DimDecl>, String> {
         let mut decls = Vec::new();
         loop {
             let name = match self.advance() {
@@ -990,7 +1053,7 @@ impl Parser {
                     t => return Err(format!("Unexpected type in DIM: {:?}", t)),
                 }
             } else {
-                infer_type_from_suffix(&name)
+                self.infer_type_for_name(&name)
             };
             self.var_types.insert(name.clone(), vt.clone());
             decls.push(DimDecl {
@@ -1004,7 +1067,23 @@ impl Parser {
                 break;
             }
         }
-        Ok(Stmt::Dim(decls))
+        Ok(decls)
+    }
+    fn parse_erase(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        let mut names = Vec::new();
+        loop {
+            match self.advance() {
+                Token::Identifier(n) => names.push(n),
+                t => return Err(format!("Expected array name in ERASE, got {:?}", t)),
+            }
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(Stmt::Erase(names))
     }
     fn parse_data(&mut self) -> Result<Stmt, String> {
         self.advance();
@@ -1094,6 +1173,59 @@ impl Parser {
         self.var_types.insert(name.clone(), t.clone());
         self.constants.insert(name.clone(), t);
         Ok(Stmt::Const(name, e))
+    }
+    fn parse_declare(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        self.consume_to_line_end();
+        Ok(Stmt::Noop)
+    }
+    fn parse_option(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        if matches!(self.peek(), Token::Base) {
+            self.advance();
+            if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                let _ = self.parse_expr()?;
+            }
+        } else {
+            self.consume_to_line_end();
+        }
+        Ok(Stmt::Noop)
+    }
+    fn parse_def_type(&mut self) -> Result<Stmt, String> {
+        let vtype = match self.advance() {
+            Token::DefInt => VarType::Integer,
+            Token::DefLng => VarType::Long,
+            Token::DefSng => VarType::Single,
+            Token::DefDbl => VarType::Double,
+            Token::DefStr => VarType::Str,
+            _ => unreachable!(),
+        };
+        let mut ranges = Vec::new();
+        loop {
+            let start = match self.advance() {
+                Token::Identifier(s) => s.chars().next().unwrap_or('A').to_ascii_uppercase(),
+                t => return Err(format!("Expected letter range in DEF type, got {:?}", t)),
+            };
+            let end = if matches!(self.peek(), Token::Minus) {
+                self.advance();
+                match self.advance() {
+                    Token::Identifier(s) => s.chars().next().unwrap_or(start).to_ascii_uppercase(),
+                    t => return Err(format!("Expected range end in DEF type, got {:?}", t)),
+                }
+            } else {
+                start
+            };
+            ranges.push((start, end));
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        for (start, end) in &ranges {
+            self.default_types.push((*start, *end, vtype.clone()));
+        }
+        Ok(Stmt::DefType(vtype, ranges))
     }
     fn parse_type_def(&mut self) -> Result<Stmt, String> {
         self.advance();
@@ -1189,7 +1321,7 @@ impl Parser {
                 t => return Err(format!("Unexpected return type: {:?}", t)),
             }
         } else {
-            infer_type_from_suffix(&name)
+            self.infer_type_for_name(&name)
         };
         let saved_types = self.var_types.clone();
         for p in &params {
@@ -1258,7 +1390,7 @@ impl Parser {
                             t => return Err(format!("Unexpected type: {:?}", t)),
                         }
                     } else {
-                        infer_type_from_suffix(&pname)
+                        self.infer_type_for_name(&pname)
                     };
                     params.push(Param {
                         name: pname,
@@ -1300,6 +1432,37 @@ impl Parser {
             }
         }
         Ok(Stmt::CallSub(name, args))
+    }
+    fn parse_on(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        if matches!(self.peek(), Token::Error) {
+            self.consume_to_line_end();
+            return Ok(Stmt::Noop);
+        }
+        let selector = self.parse_expr()?;
+        let is_gosub = if matches!(self.peek(), Token::Goto) {
+            self.advance();
+            false
+        } else if matches!(self.peek(), Token::Gosub) {
+            self.advance();
+            true
+        } else {
+            return Err("Expected GOTO or GOSUB in ON statement".to_string());
+        };
+        let mut targets = Vec::new();
+        loop {
+            targets.push(self.parse_goto_target()?);
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(Stmt::OnJump {
+            selector,
+            targets,
+            is_gosub,
+        })
     }
     fn parse_open(&mut self) -> Result<Stmt, String> {
         self.advance();
@@ -1445,6 +1608,21 @@ impl Parser {
         }
         Ok(lv)
     }
+    fn parse_line_input(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        self.advance();
+        let mut prompt = None;
+        if let Token::StringLit(s) = self.peek().clone() {
+            self.advance();
+            prompt = Some(s);
+            if matches!(self.peek(), Token::Semicolon | Token::Comma) {
+                self.advance();
+            }
+        }
+        let lv = self.parse_lvalue()?;
+        self.declare_lvalue_if_needed(&lv);
+        Ok(Stmt::Input(None, prompt, vec![lv]))
+    }
     fn parse_color(&mut self) -> Result<Stmt, String> {
         self.advance();
         let mut fg = None;
@@ -1588,6 +1766,44 @@ impl Parser {
             }
         }
         Ok(Stmt::Paint(x, y, color, border))
+    }
+    fn parse_locate(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        let row = if matches!(
+            self.peek(),
+            Token::Comma | Token::Newline | Token::Eof | Token::Colon
+        ) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        let col = if matches!(self.peek(), Token::Comma) {
+            self.advance();
+            if matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            }
+        } else {
+            None
+        };
+        Ok(Stmt::Locate(row, col))
+    }
+    fn parse_swap(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        let left = self.parse_lvalue()?;
+        if !self.matches(&Token::Comma) {
+            return Err("Expected ',' in SWAP".to_string());
+        }
+        let right = self.parse_lvalue()?;
+        self.declare_lvalue_if_needed(&left);
+        self.declare_lvalue_if_needed(&right);
+        Ok(Stmt::Swap(left, right))
+    }
+    fn parse_resume(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        self.consume_to_line_end();
+        Ok(Stmt::Noop)
     }
     fn parse_randomize(&mut self) -> Result<Stmt, String> {
         self.advance();
@@ -1772,7 +1988,7 @@ impl Parser {
     fn declare_var_if_needed(&mut self, name: &str) {
         if !self.var_types.contains_key(name) {
             self.var_types
-                .insert(name.to_string(), infer_type_from_suffix(name));
+                .insert(name.to_string(), self.infer_type_for_name(name));
         }
     }
     fn declare_lvalue_if_needed(&mut self, lv: &LValue) {
@@ -1785,7 +2001,23 @@ impl Parser {
         self.var_types
             .get(name)
             .cloned()
-            .unwrap_or_else(|| infer_type_from_suffix(name))
+            .unwrap_or_else(|| self.infer_type_for_name(name))
+    }
+    fn infer_type_for_name(&self, name: &str) -> VarType {
+        let suffixed = infer_type_from_suffix(name);
+        if !matches!(suffixed, VarType::Single) || name.ends_with('!') {
+            return suffixed;
+        }
+        let Some(first) = name.chars().find(|c| c.is_ascii_alphabetic()) else {
+            return suffixed;
+        };
+        let first = first.to_ascii_uppercase();
+        self.default_types
+            .iter()
+            .rev()
+            .find(|(start, end, _)| first >= *start && first <= *end)
+            .map(|(_, _, vt)| vt.clone())
+            .unwrap_or(suffixed)
     }
     fn lvalue_type(&self, lv: &LValue) -> VarType {
         match lv {
@@ -1802,7 +2034,7 @@ impl Parser {
                         }
                     }
                 }
-                infer_type_from_suffix(fname)
+                self.infer_type_for_name(fname)
             }
         }
     }
@@ -1924,10 +2156,13 @@ pub fn infer_expr_type(
 
 fn builtin_return_type(name: &str) -> Option<VarType> {
     let t = match name {
-        "LEN" | "INT" | "ABS" | "SQR" | "RND" | "VAL" | "ASC" | "INSTR" | "SIN" | "COS" | "TAN"
-        | "ATN" | "LOG" | "EXP" | "SGN" | "TIMER" => VarType::Double,
+        "LEN" | "INT" | "FIX" | "ABS" | "SQR" | "RND" | "VAL" | "ASC" | "INSTR" | "SIN" | "COS"
+        | "TAN" | "ATN" | "LOG" | "EXP" | "SGN" | "TIMER" | "CINT" | "CLNG" | "CSNG" | "CDBL" => {
+            VarType::Double
+        }
         "MID$" | "MID" | "LEFT$" | "LEFT" | "RIGHT$" | "RIGHT" | "STR$" | "CHR$" | "UCASE$"
-        | "LCASE$" | "SPACE$" | "STRING$" | "HEX$" | "OCT$" => VarType::Str,
+        | "LCASE$" | "LTRIM$" | "LTRIM" | "RTRIM$" | "RTRIM" | "TRIM$" | "TRIM" | "SPACE$"
+        | "STRING$" | "HEX$" | "OCT$" | "CSTR$" | "CSTR" | "TAB" | "SPC" => VarType::Str,
         _ => return None,
     };
     Some(t)
