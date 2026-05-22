@@ -53,6 +53,12 @@ Build an optimized binary:
 cargo build --release
 ```
 
+## Beginner Tutorial
+
+New to programming or BASIC? Start with the step-by-step tutorial:
+
+- [QBasic Studio Beginner Tutorial](docs/tutorial.md)
+
 ## Command Line
 
 ```text
@@ -169,6 +175,7 @@ src/lexer.rs        Tokenizer for the BASIC dialect
 src/parser.rs       AST and parser
 src/interpreter.rs  Runtime evaluator and tests
 src/graphics.rs     Shared graphics buffer and drawing primitives
+docs/               User guides and tutorials
 examples/           Runnable BASIC sample programs
 .github/            CI/CD and dependency automation
 ```
