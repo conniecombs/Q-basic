@@ -909,6 +909,7 @@ dependencies = [
  "crossterm",
  "minifb",
  "ratatui",
+ "tempfile",
  "tui-textarea",
 ]
 

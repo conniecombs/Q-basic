@@ -123,13 +123,15 @@ pub enum Token {
 
 pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
     let mut tokens = Vec::new();
+    let mut chars = Vec::new();
     for raw_line in input.lines() {
         let line = raw_line.trim_end();
         if line.trim().is_empty() {
             tokens.push(Token::Newline);
             continue;
         }
-        let chars: Vec<char> = line.chars().collect();
+        chars.clear();
+        chars.extend(line.chars());
         let mut i = 0;
         let mut at_line_start = true;
         while i < chars.len() {
@@ -420,7 +422,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
     Ok(tokens)
 }
 
-fn is_keyword(s: &str) -> bool {
+pub fn is_keyword(s: &str) -> bool {
     matches!(
         s,
         "PRINT"

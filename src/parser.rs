@@ -248,9 +248,12 @@ impl Parser {
         }
     }
     fn advance(&mut self) -> Token {
-        let t = self.tokens[self.pos].clone();
-        if self.pos < self.tokens.len() - 1 {
-            self.pos += 1;
+        let mut t = Token::Eof;
+        if self.pos < self.tokens.len() {
+            std::mem::swap(&mut t, &mut self.tokens[self.pos]);
+            if self.pos < self.tokens.len() - 1 {
+                self.pos += 1;
+            }
         }
         t
     }
@@ -415,13 +418,15 @@ impl Parser {
     }
     fn parse_line(&mut self) -> Result<Vec<Stmt>, String> {
         let mut result = Vec::new();
-        if let Token::LineNumber(n) = self.peek().clone() {
-            self.advance();
-            result.push(Stmt::LineNumber(n));
+        if matches!(self.peek(), Token::LineNumber(_)) {
+            if let Token::LineNumber(n) = self.advance() {
+                result.push(Stmt::LineNumber(n));
+            }
         }
-        if let Token::Label(name) = self.peek().clone() {
-            self.advance();
-            result.push(Stmt::Label(name));
+        if matches!(self.peek(), Token::Label(_)) {
+            if let Token::Label(name) = self.advance() {
+                result.push(Stmt::Label(name));
+            }
         }
         loop {
             if matches!(self.peek(), Token::Newline | Token::Eof) {
@@ -441,13 +446,16 @@ impl Parser {
         Ok(result)
     }
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
+        if matches!(self.peek(), Token::Identifier(_)) {
+            return self.parse_id_stmt();
+        }
         match self.peek().clone() {
             Token::Print => self.parse_print(),
             Token::Let => {
                 self.advance();
                 self.parse_assignment()
             }
-            Token::Identifier(_) => self.parse_id_stmt(),
+            Token::Identifier(_) => unreachable!(),
             Token::Input => self.parse_input(),
             Token::If => self.parse_if(),
             Token::Select => self.parse_select(),
@@ -1979,38 +1987,43 @@ impl Parser {
         Ok(base)
     }
     fn parse_primary(&mut self) -> Result<Expr, String> {
-        let mut e = match self.advance() {
-            Token::Number(n) => Expr::Number(n),
-            Token::StringLit(s) => Expr::StringLit(s),
-            Token::LenKw => {
-                if !self.matches(&Token::LParen) {
-                    return Err("Expected '(' after LEN".to_string());
-                }
-                let inner = self.parse_expr()?;
-                if !self.matches(&Token::RParen) {
-                    return Err("Expected ')'".to_string());
-                }
-                Expr::ArrayOrCall("LEN".to_string(), vec![inner])
-            }
-            Token::Identifier(name) => {
-                if matches!(self.peek(), Token::LParen) {
-                    self.advance();
-                    let mut args = Vec::new();
-                    if !matches!(self.peek(), Token::RParen) {
-                        args.push(self.parse_expr()?);
-                        while matches!(self.peek(), Token::Comma) {
-                            self.advance();
-                            args.push(self.parse_expr()?);
-                        }
+        if matches!(self.peek(), Token::Number(_) | Token::StringLit(_) | Token::LenKw | Token::Identifier(_)) {
+            match self.advance() {
+                Token::Number(n) => return Ok(Expr::Number(n)),
+                Token::StringLit(s) => return Ok(Expr::StringLit(s)),
+                Token::LenKw => {
+                    if !self.matches(&Token::LParen) {
+                        return Err("Expected '(' after LEN".to_string());
                     }
+                    let inner = self.parse_expr()?;
                     if !self.matches(&Token::RParen) {
                         return Err("Expected ')'".to_string());
                     }
-                    Expr::ArrayOrCall(name, args)
-                } else {
-                    Expr::Variable(name)
+                    return Ok(Expr::ArrayOrCall("LEN".to_string(), vec![inner]));
                 }
+                Token::Identifier(name) => {
+                    if matches!(self.peek(), Token::LParen) {
+                        self.advance();
+                        let mut args = Vec::new();
+                        if !matches!(self.peek(), Token::RParen) {
+                            args.push(self.parse_expr()?);
+                            while matches!(self.peek(), Token::Comma) {
+                                self.advance();
+                                args.push(self.parse_expr()?);
+                            }
+                        }
+                        if !self.matches(&Token::RParen) {
+                            return Err("Expected ')'".to_string());
+                        }
+                        return Ok(Expr::ArrayOrCall(name, args));
+                    }
+                    return Ok(Expr::Variable(name));
+                }
+                _ => unreachable!(),
             }
+        }
+        
+        let mut e = match self.advance() {
             Token::LParen => {
                 let e = self.parse_expr()?;
                 if !self.matches(&Token::RParen) {

@@ -81,12 +81,11 @@ enum Flow {
     ExitSub,
 }
 
-pub struct FileEntry {
-    pub mode: FileMode,
-    pub reader: Option<BufReader<File>>,
-    pub writer: Option<BufWriter<File>>,
-    pub file: Option<File>,
-    pub record_len: Option<usize>,
+pub enum FileHandle {
+    Input(BufReader<File>),
+    Output(BufWriter<File>),
+    Append(BufWriter<File>),
+    Random { file: File, record_len: usize },
 }
 
 pub struct SubInfo {
@@ -127,7 +126,7 @@ pub struct Interpreter {
     pub data_ptr: usize,
     pub data_labels: HashMap<String, usize>,
     pub scopes: Vec<Scope>,
-    pub files: HashMap<u32, FileEntry>,
+    pub files: HashMap<u32, FileHandle>,
     pub default_types: Vec<(char, char, VarType)>,
     pub gosub_stack: Vec<usize>,
     pub rng_state: u64,
@@ -542,23 +541,11 @@ impl Interpreter {
                 let entry = match mode {
                     FileMode::Input => {
                         let f = File::open(&fname).map_err(|e| format!("OPEN error: {}", e))?;
-                        FileEntry {
-                            mode: *mode,
-                            reader: Some(BufReader::new(f)),
-                            writer: None,
-                            file: None,
-                            record_len: None,
-                        }
+                        FileHandle::Input(BufReader::new(f))
                     }
                     FileMode::Output => {
                         let f = File::create(&fname).map_err(|e| format!("OPEN error: {}", e))?;
-                        FileEntry {
-                            mode: *mode,
-                            reader: None,
-                            writer: Some(BufWriter::new(f)),
-                            file: None,
-                            record_len: None,
-                        }
+                        FileHandle::Output(BufWriter::new(f))
                     }
                     FileMode::Append => {
                         let f = OpenOptions::new()
@@ -566,13 +553,7 @@ impl Interpreter {
                             .append(true)
                             .open(&fname)
                             .map_err(|e| format!("OPEN error: {}", e))?;
-                        FileEntry {
-                            mode: *mode,
-                            reader: None,
-                            writer: Some(BufWriter::new(f)),
-                            file: None,
-                            record_len: None,
-                        }
+                        FileHandle::Append(BufWriter::new(f))
                     }
                     FileMode::Random => {
                         let f = OpenOptions::new()
@@ -582,13 +563,7 @@ impl Interpreter {
                             .truncate(false)
                             .open(&fname)
                             .map_err(|e| format!("OPEN error: {}", e))?;
-                        FileEntry {
-                            mode: *mode,
-                            reader: None,
-                            writer: None,
-                            file: Some(f),
-                            record_len: rlen,
-                        }
+                        FileHandle::Random { file: f, record_len: rlen.unwrap_or(128) }
                     }
                 };
                 self.files.insert(*handle, entry);
@@ -774,7 +749,7 @@ impl Interpreter {
                     if self.cancel_flag.load(Ordering::Relaxed) {
                         return Err("Execution interrupted by user".to_string());
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let _ = self.input_rx.recv_timeout(std::time::Duration::from_millis(100));
                 }
                 Ok(Flow::Normal)
             }
@@ -885,14 +860,14 @@ impl Interpreter {
             }
         }
         if let Some(h) = handle {
-            let entry = self
+            let handle_enum = self
                 .files
                 .get_mut(&h)
                 .ok_or_else(|| format!("File #{} not open", h))?;
-            let w = entry
-                .writer
-                .as_mut()
-                .ok_or_else(|| "File not open for output".to_string())?;
+            let w = match handle_enum {
+                FileHandle::Output(w) | FileHandle::Append(w) => w,
+                _ => return Err("File not open for output".to_string()),
+            };
             if newline {
                 writeln!(w, "{}", out).map_err(|e| e.to_string())?;
             } else {
@@ -913,14 +888,14 @@ impl Interpreter {
         vars: &[LValue],
     ) -> Result<Flow, String> {
         let line = if let Some(h) = handle {
-            let entry = self
+            let handle_enum = self
                 .files
                 .get_mut(&h)
                 .ok_or_else(|| format!("File #{} not open", h))?;
-            let r = entry
-                .reader
-                .as_mut()
-                .ok_or_else(|| "File not open for input".to_string())?;
+            let r = match handle_enum {
+                FileHandle::Input(r) => r,
+                _ => return Err("File not open for input".to_string()),
+            };
             let mut buf = String::new();
             r.read_line(&mut buf).map_err(|e| e.to_string())?;
             buf.trim_end_matches(&['\r', '\n'][..]).to_string()
@@ -1069,20 +1044,14 @@ impl Interpreter {
             None => None,
         };
         let (rlen, buf) = {
-            let entry = self
+            let handle_enum = self
                 .files
                 .get_mut(&handle)
                 .ok_or_else(|| format!("File #{} not open", handle))?;
-            if !matches!(entry.mode, FileMode::Random) {
-                return Err("GET requires RANDOM mode".to_string());
-            }
-            let rlen = entry
-                .record_len
-                .ok_or_else(|| "Missing record length".to_string())?;
-            let f = entry
-                .file
-                .as_mut()
-                .ok_or_else(|| "File handle invalid".to_string())?;
+            let (f, rlen) = match handle_enum {
+                FileHandle::Random { file, record_len } => (file, *record_len),
+                _ => return Err("GET requires RANDOM mode".to_string()),
+            };
             if let Some(rn) = rec_num {
                 let pos = (rn.saturating_sub(1)) * rlen as u64;
                 f.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
@@ -1102,20 +1071,14 @@ impl Interpreter {
             None => None,
         };
         let value = self.read_lvalue(var)?;
-        let entry = self
+        let handle_enum = self
             .files
             .get_mut(&handle)
             .ok_or_else(|| format!("File #{} not open", handle))?;
-        if !matches!(entry.mode, FileMode::Random) {
-            return Err("PUT requires RANDOM mode".to_string());
-        }
-        let rlen = entry
-            .record_len
-            .ok_or_else(|| "Missing record length".to_string())?;
-        let f = entry
-            .file
-            .as_mut()
-            .ok_or_else(|| "File handle invalid".to_string())?;
+        let (f, rlen) = match handle_enum {
+            FileHandle::Random { file, record_len } => (file, *record_len),
+            _ => return Err("PUT requires RANDOM mode".to_string()),
+        };
         if let Some(rn) = rec_num {
             let pos = (rn.saturating_sub(1)) * rlen as u64;
             f.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
@@ -1179,27 +1142,42 @@ impl Interpreter {
                 for e in idx_exprs {
                     idxs.push(self.eval(e)?.as_number()? as usize);
                 }
-                let v = self.get_var(n);
-                if let Value::Array(a) = v {
+                let v = self.get_var_ref(n);
+                if let Some(Value::Array(a)) = v {
                     let flat = flatten_index(&a.dims, &idxs)?;
                     Ok(a.data[flat].clone())
                 } else {
                     Err(format!("'{}' is not an array", n))
                 }
             }
-            LValue::Field(parent, fname) => {
-                let pv = self.read_lvalue(parent)?;
-                if let Value::Record(rec) = pv {
-                    for (fn_, fv) in rec.fields {
-                        if fn_.eq_ignore_ascii_case(fname) {
-                            return Ok(fv);
+            LValue::Field(parent, fname) => match &**parent {
+                LValue::Var(n) => {
+                    let pv = self.get_var_ref(n).ok_or_else(|| format!("Undefined variable '{}'", n))?;
+                    if let Value::Record(rec) = pv {
+                        for (fn_, fv) in &rec.fields {
+                            if fn_.eq_ignore_ascii_case(fname) {
+                                return Ok(fv.clone());
+                            }
                         }
+                        Err(format!("Field '{}' not found", fname))
+                    } else {
+                        Err("Not a record".to_string())
                     }
-                    Err(format!("Field '{}' not found", fname))
-                } else {
-                    Err("Not a record".to_string())
                 }
-            }
+                _ => {
+                    let pv = self.read_lvalue(parent)?;
+                    if let Value::Record(rec) = pv {
+                        for (fn_, fv) in rec.fields {
+                            if fn_.eq_ignore_ascii_case(fname) {
+                                return Ok(fv);
+                            }
+                        }
+                        Err(format!("Field '{}' not found", fname))
+                    } else {
+                        Err("Not a record".to_string())
+                    }
+                }
+            },
         }
     }
     fn eval(&mut self, e: &Expr) -> Result<Value, String> {
@@ -1207,19 +1185,34 @@ impl Interpreter {
             Expr::Number(n) => Ok(Value::Number(*n)),
             Expr::StringLit(s) => Ok(Value::Str(s.clone())),
             Expr::Variable(n) => Ok(self.get_var(n)),
-            Expr::FieldAccess(parent, fname) => {
-                let pv = self.eval(parent)?;
-                if let Value::Record(rec) = pv {
-                    for (fn_, fv) in rec.fields {
-                        if fn_.eq_ignore_ascii_case(fname) {
-                            return Ok(fv);
+            Expr::FieldAccess(parent, fname) => match &**parent {
+                Expr::Variable(n) => {
+                    let pv = self.get_var_ref(n).ok_or_else(|| format!("Undefined variable '{}'", n))?;
+                    if let Value::Record(rec) = pv {
+                        for (fn_, fv) in &rec.fields {
+                            if fn_.eq_ignore_ascii_case(fname) {
+                                return Ok(fv.clone());
+                            }
                         }
+                        Err(format!("Field '{}' not found", fname))
+                    } else {
+                        Err("Field access on non-record".to_string())
                     }
-                    Err(format!("Field '{}' not found", fname))
-                } else {
-                    Err("Field access on non-record".to_string())
                 }
-            }
+                _ => {
+                    let pv = self.eval(parent)?;
+                    if let Value::Record(rec) = pv {
+                        for (fn_, fv) in rec.fields {
+                            if fn_.eq_ignore_ascii_case(fname) {
+                                return Ok(fv);
+                            }
+                        }
+                        Err(format!("Field '{}' not found", fname))
+                    } else {
+                        Err("Field access on non-record".to_string())
+                    }
+                }
+            },
             Expr::UnaryMinus(inner) => {
                 let v = self.eval(inner)?;
                 Ok(Value::Number(-v.as_number()?))
@@ -1244,12 +1237,12 @@ impl Interpreter {
                 for a in args {
                     idxs.push(self.eval(a)?.as_number()? as usize);
                 }
-                let v = self.get_var(name);
-                if let Value::Array(a) = v {
+                let v = self.get_var_ref(name);
+                if let Some(Value::Array(a)) = v {
                     let flat = flatten_index(&a.dims, &idxs)?;
                     Ok(a.data[flat].clone())
                 } else {
-                    Err(format!("Undefined identifier '{}'", name))
+                    Err(format!("Undefined array '{}'", name))
                 }
             }
         }
@@ -1270,27 +1263,25 @@ impl Interpreter {
                 } else {
                     None
                 };
-                let chars: Vec<char> = s.chars().collect();
                 let from = if start <= 1.0 { 0 } else { start as usize - 1 };
-                let to = match len {
-                    Some(l) => (from + l).min(chars.len()),
-                    None => chars.len(),
+                let iter = s.chars().skip(from);
+                let result_str: String = match len {
+                    Some(l) => iter.take(l).collect(),
+                    None => iter.collect(),
                 };
-                let from = from.min(chars.len());
-                Value::Str(chars[from..to].iter().collect())
+                Value::Str(result_str)
             }
             "LEFT$" | "LEFT" => {
                 let s = string_arg(&av, 0, "LEFT$")?;
                 let n = count_arg(&av, 1, "LEFT$")?;
-                let chars: Vec<char> = s.chars().collect();
-                Value::Str(chars[..n.min(chars.len())].iter().collect())
+                Value::Str(s.chars().take(n).collect())
             }
             "RIGHT$" | "RIGHT" => {
                 let s = string_arg(&av, 0, "RIGHT$")?;
                 let n = count_arg(&av, 1, "RIGHT$")?;
-                let chars: Vec<char> = s.chars().collect();
-                let start = chars.len().saturating_sub(n);
-                Value::Str(chars[start..].iter().collect())
+                let chars_count = s.chars().count();
+                let start = chars_count.saturating_sub(n);
+                Value::Str(s.chars().skip(start).collect())
             }
             "INT" => Value::Number(number_arg(&av, 0, "INT")?.floor()),
             "FIX" => Value::Number(number_arg(&av, 0, "FIX")?.trunc()),

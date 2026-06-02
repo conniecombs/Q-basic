@@ -235,10 +235,12 @@ fn run_ide_loop(
     let mut app_state = AppState::Editing;
     let mut is_running = false;
     let mut running_program: Option<RunningProgram> = None;
+    let mut needs_redraw = true;
 
     loop {
-        configure_editor(&mut textarea, &current_file, dirty, is_running);
-        terminal.draw(|f| {
+        if needs_redraw || is_running {
+            configure_editor(&mut textarea, &current_file, dirty, is_running);
+            terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -275,16 +277,27 @@ fn run_ide_loop(
                 .block(Block::default().borders(Borders::ALL).title(" Status "));
             f.render_widget(footer, chunks[2]);
         })?;
+            needs_redraw = false;
+        }
 
-        poll_running_program(
+        if poll_running_program(
             &mut running_program,
             &mut is_running,
             &mut status_msg,
             &mut status_color,
-        );
+        ) {
+            needs_redraw = true;
+        }
 
-        if event::poll(std::time::Duration::from_millis(16))? {
+        let timeout = if is_running {
+            std::time::Duration::from_millis(16)
+        } else {
+            std::time::Duration::from_millis(250)
+        };
+
+        if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
+                needs_redraw = true;
                 match &mut app_state {
                     AppState::PromptingSave(input) => match key.code {
                         KeyCode::Enter => {
@@ -693,26 +706,25 @@ fn source_with_auto_line_numbers(lines: &[String]) -> String {
     source
 }
 
-fn highlight_basic_code(
-    line: &str,
+fn highlight_basic_code<'a>(
+    line: &'a str,
     left_col: usize,
     text_width: usize,
     line_style: Style,
-) -> Vec<Span<'static>> {
+) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
     if text_width == 0 {
         return spans;
     }
 
-    let chars: Vec<char> = line.chars().collect();
-    let mut i = 0;
     let mut col = 0;
-    while i < chars.len() {
-        let c = chars[i];
+    let mut char_iter = line.char_indices().peekable();
+    
+    while let Some((i, c)) = char_iter.next() {
         if c == '\'' {
             push_visible_span(
                 &mut spans,
-                chars[i..].iter().collect::<String>(),
+                &line[i..],
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
@@ -724,17 +736,17 @@ fn highlight_basic_code(
         }
         if c == '"' {
             let start = i;
-            i += 1;
-            while i < chars.len() {
-                let ch = chars[i];
-                i += 1;
+            let mut end = i + c.len_utf8();
+            while let Some(&(j, ch)) = char_iter.peek() {
+                char_iter.next();
+                end = j + ch.len_utf8();
                 if ch == '"' {
                     break;
                 }
             }
             push_visible_span(
                 &mut spans,
-                chars[start..i].iter().collect::<String>(),
+                &line[start..end],
                 Style::default().fg(Color::Green),
                 &mut col,
                 left_col,
@@ -742,20 +754,25 @@ fn highlight_basic_code(
             );
             continue;
         }
-        if c.is_ascii_digit() || (c == '.' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit())
-        {
+        let next_is_digit = char_iter.peek().map(|&(_, ch)| ch.is_ascii_digit()).unwrap_or(false);
+        if c.is_ascii_digit() || (c == '.' && next_is_digit) {
             let start = i;
             let mut saw_dot = c == '.';
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_digit() || (chars[i] == '.' && !saw_dot)) {
-                if chars[i] == '.' {
-                    saw_dot = true;
+            let mut end = i + c.len_utf8();
+            while let Some(&(j, ch)) = char_iter.peek() {
+                if ch.is_ascii_digit() || (ch == '.' && !saw_dot) {
+                    if ch == '.' {
+                        saw_dot = true;
+                    }
+                    end = j + ch.len_utf8();
+                    char_iter.next();
+                } else {
+                    break;
                 }
-                i += 1;
             }
             push_visible_span(
                 &mut spans,
-                chars[start..i].iter().collect::<String>(),
+                &line[start..end],
                 Style::default().fg(Color::Magenta),
                 &mut col,
                 left_col,
@@ -765,19 +782,27 @@ fn highlight_basic_code(
         }
         if c.is_ascii_alphabetic() || c == '_' {
             let start = i;
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
-                i += 1;
+            let mut end = i + c.len_utf8();
+            while let Some(&(j, ch)) = char_iter.peek() {
+                if ch.is_ascii_alphanumeric() || ch == '_' {
+                    end = j + ch.len_utf8();
+                    char_iter.next();
+                } else {
+                    break;
+                }
             }
-            if i < chars.len() && matches!(chars[i], '$' | '%' | '!' | '#' | '&') {
-                i += 1;
+            if let Some(&(j, ch)) = char_iter.peek() {
+                if matches!(ch, '$' | '%' | '!' | '#' | '&') {
+                    end = j + ch.len_utf8();
+                    char_iter.next();
+                }
             }
-            let word: String = chars[start..i].iter().collect();
-            let upper = word.to_uppercase();
-            if upper == "REM" {
+            
+            let word = &line[start..end];
+            if word.eq_ignore_ascii_case("REM") {
                 push_visible_span(
                     &mut spans,
-                    chars[start..].iter().collect::<String>(),
+                    &line[start..],
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),
@@ -787,11 +812,11 @@ fn highlight_basic_code(
                 );
                 break;
             }
-            let style = if is_basic_keyword(&upper) {
+            let style = if is_basic_keyword(word) {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
-            } else if is_basic_builtin(&upper) {
+            } else if is_basic_builtin(word) {
                 Style::default().fg(Color::Cyan)
             } else {
                 Style::default().fg(Color::White)
@@ -805,160 +830,77 @@ fn highlight_basic_code(
         } else {
             Style::default().fg(Color::Blue)
         };
+        let end = i + c.len_utf8();
         push_visible_span(
             &mut spans,
-            c.to_string(),
+            &line[i..end],
             style,
             &mut col,
             left_col,
             text_width,
         );
-        i += 1;
     }
 
     spans
 }
 
-fn push_visible_span(
-    spans: &mut Vec<Span<'static>>,
-    text: String,
+fn push_visible_span<'a>(
+    spans: &mut Vec<Span<'a>>,
+    text: &'a str,
     style: Style,
     col: &mut usize,
     left_col: usize,
     text_width: usize,
 ) {
     let current_len = *col;
-    let end_col = current_len + text.chars().count();
+    let text_chars_count = text.chars().count();
+    let end_col = current_len + text_chars_count;
     *col = end_col;
     if end_col <= left_col || current_len >= left_col + text_width {
         return;
     }
+    
+    // Fast path: if the text is fully visible and ascii
+    if current_len >= left_col && end_col <= left_col + text_width && text.is_ascii() {
+        spans.push(Span::styled(text, style));
+        return;
+    }
+
     let skip = left_col.saturating_sub(current_len);
     let take = (left_col + text_width).saturating_sub(current_len + skip);
-    let visible: String = text.chars().skip(skip).take(take).collect();
-    if !visible.is_empty() {
-        spans.push(Span::styled(visible, style));
+    
+    // We have to extract a substring by char indexing
+    let mut char_indices = text.char_indices();
+    let start_byte = if skip == 0 { 0 } else {
+        char_indices.nth(skip - 1).map(|(idx, c)| idx + c.len_utf8()).unwrap_or(text.len())
+    };
+    
+    let end_byte = if skip + take >= text_chars_count {
+        text.len()
+    } else {
+        if take == 0 {
+            start_byte
+        } else {
+            char_indices.nth(take - 1).map(|(idx, _)| idx).unwrap_or(text.len())
+        }
+    };
+    
+    if start_byte < end_byte {
+        spans.push(Span::styled(&text[start_byte..end_byte], style));
     }
 }
 
 fn is_basic_keyword(word: &str) -> bool {
-    matches!(
-        word,
-        "APPEND"
-            | "AS"
-            | "BASE"
-            | "BYREF"
-            | "BYVAL"
-            | "CALL"
-            | "CASE"
-            | "CLEAR"
-            | "CLOSE"
-            | "CONST"
-            | "DATA"
-            | "DECLARE"
-            | "DEFDBL"
-            | "DEFINT"
-            | "DEFLNG"
-            | "DEFSNG"
-            | "DEFSTR"
-            | "DIM"
-            | "DO"
-            | "DOUBLE"
-            | "ELSE"
-            | "ELSEIF"
-            | "END"
-            | "ENDIF"
-            | "ERASE"
-            | "EXIT"
-            | "FOR"
-            | "FUNCTION"
-            | "GET"
-            | "GOSUB"
-            | "GOTO"
-            | "IF"
-            | "INPUT"
-            | "INTEGER"
-            | "IS"
-            | "LET"
-            | "LINE"
-            | "LONG"
-            | "LOOP"
-            | "NEXT"
-            | "ON"
-            | "OPEN"
-            | "OPTION"
-            | "OUTPUT"
-            | "PRESERVE"
-            | "PRINT"
-            | "PUT"
-            | "RANDOM"
-            | "READ"
-            | "REDIM"
-            | "RESTORE"
-            | "RETURN"
-            | "SELECT"
-            | "SHARED"
-            | "SINGLE"
-            | "STATIC"
-            | "STEP"
-            | "STRING"
-            | "SUB"
-            | "THEN"
-            | "TO"
-            | "TYPE"
-            | "UNTIL"
-            | "WEND"
-            | "WHILE"
-    )
+    crate::lexer::is_keyword(&word.to_uppercase())
 }
-
 fn is_basic_builtin(word: &str) -> bool {
-    matches!(
-        word,
-        "ABS"
-            | "ASC"
-            | "ATN"
-            | "CHR$"
-            | "CDBL"
-            | "CINT"
-            | "CLNG"
-            | "COS"
-            | "CSNG"
-            | "CSTR"
-            | "CSTR$"
-            | "EXP"
-            | "FIX"
-            | "HEX$"
-            | "INSTR"
-            | "INT"
-            | "LCASE$"
-            | "LEFT$"
-            | "LEN"
-            | "LOCATE"
-            | "LOG"
-            | "LTRIM"
-            | "LTRIM$"
-            | "MID$"
-            | "OCT$"
-            | "RIGHT$"
-            | "RND"
-            | "RTRIM"
-            | "RTRIM$"
-            | "SGN"
-            | "SIN"
-            | "SPACE$"
-            | "SPC"
-            | "SQR"
-            | "STR$"
-            | "STRING$"
-            | "TAB"
-            | "TAN"
-            | "TIMER"
-            | "TRIM$"
-            | "TRIM"
-            | "UCASE$"
-            | "VAL"
-    )
+    [
+        "ABS", "ASC", "ATN", "CHR$", "CDBL", "CINT", "CLNG", "COS", "CSNG", "CSTR", "CSTR$",
+        "EXP", "FIX", "HEX$", "INSTR", "INT", "LCASE$", "LEFT$", "LEN", "LOCATE", "LOG",
+        "LTRIM", "LTRIM$", "MID$", "OCT$", "RIGHT$", "RND", "RTRIM", "RTRIM$", "SGN", "SIN",
+        "SPACE$", "SPC", "SQR", "STR$", "STRING$", "TAB", "TAN", "TIMER", "TRIM$", "TRIM",
+        "UCASE$", "VAL"
+    ].iter().any(|&k| k.eq_ignore_ascii_case(word))
 }
 
 fn header_line(path: &Path, dirty: bool, is_running: bool) -> Line<'static> {
@@ -1016,7 +958,17 @@ fn prompt_target_path(input: &str, current_file: &Path) -> PathBuf {
 }
 
 fn save_editor(path: &Path, textarea: &TextArea<'static>) -> Result<(), String> {
-    fs::write(path, textarea.lines().join("\n")).map_err(|err| err.to_string())
+    use std::io::Write;
+    let file = fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut writer = std::io::BufWriter::new(file);
+    for (i, line) in textarea.lines().iter().enumerate() {
+        if i > 0 {
+            writer.write_all(b"\n").map_err(|e| e.to_string())?;
+        }
+        writer.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    writer.flush().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn push_console_line(console_output: &mut Vec<String>, line: String) {
@@ -1109,17 +1061,15 @@ fn start_program(
 }
 
 fn write_run_source(source: &str) -> Result<PathBuf, String> {
-    let mut path = env::temp_dir();
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    path.push(format!(
-        "qbasic_studio_run_{}_{}.bas",
-        std::process::id(),
-        stamp
-    ));
-    fs::write(&path, source).map_err(|err| err.to_string())?;
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix("qbasic_studio_run_")
+        .suffix(".bas")
+        .tempfile()
+        .map_err(|e| e.to_string())?;
+    file.write_all(source.as_bytes()).map_err(|e| e.to_string())?;
+    file.flush().map_err(|e| e.to_string())?;
+    let (_, path) = file.keep().map_err(|e| e.to_string())?;
     Ok(path)
 }
 
@@ -1157,9 +1107,9 @@ fn poll_running_program(
     is_running: &mut bool,
     status_msg: &mut String,
     status_color: &mut Color,
-) {
+) -> bool {
     let Some(program) = running_program.as_mut() else {
-        return;
+        return false;
     };
     match program.child.try_wait() {
         Ok(Some(status)) => {
@@ -1174,8 +1124,9 @@ fn poll_running_program(
                 *status_msg = format!("Program exited with {}", status);
                 *status_color = Color::Red;
             }
+            true
         }
-        Ok(None) => {}
+        Ok(None) => false,
         Err(err) => {
             let path = program.source_path.clone();
             *running_program = None;
@@ -1183,6 +1134,7 @@ fn poll_running_program(
             let _ = fs::remove_file(path);
             *status_msg = format!("Program status failed: {}", err);
             *status_color = Color::Red;
+            true
         }
     }
 }
