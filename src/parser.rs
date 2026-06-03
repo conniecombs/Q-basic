@@ -138,6 +138,7 @@ pub enum Stmt {
     Erase(Vec<String>),
     Const(String, Expr),
     Noop,
+    OptionBase(Expr),
     DefType(VarType, Vec<(char, char)>),
     TypeDef(String, Vec<(String, VarType)>),
     SubDef {
@@ -1236,13 +1237,15 @@ impl Parser {
         self.advance();
         if matches!(self.peek(), Token::Base) {
             self.advance();
-            if !matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
-                let _ = self.parse_expr()?;
+            if matches!(self.peek(), Token::Newline | Token::Eof | Token::Colon) {
+                return Err("Expected OPTION BASE value".to_string());
             }
+            let base = self.parse_expr()?;
+            Ok(Stmt::OptionBase(base))
         } else {
             self.consume_to_line_end();
+            Ok(Stmt::Noop)
         }
-        Ok(Stmt::Noop)
     }
     fn parse_def_type(&mut self) -> Result<Stmt, String> {
         let vtype = match self.advance() {
@@ -1987,43 +1990,38 @@ impl Parser {
         Ok(base)
     }
     fn parse_primary(&mut self) -> Result<Expr, String> {
-        if matches!(self.peek(), Token::Number(_) | Token::StringLit(_) | Token::LenKw | Token::Identifier(_)) {
-            match self.advance() {
-                Token::Number(n) => return Ok(Expr::Number(n)),
-                Token::StringLit(s) => return Ok(Expr::StringLit(s)),
-                Token::LenKw => {
-                    if !self.matches(&Token::LParen) {
-                        return Err("Expected '(' after LEN".to_string());
+        let mut e = match self.advance() {
+            Token::Number(n) => Expr::Number(n),
+            Token::StringLit(s) => Expr::StringLit(s),
+            Token::LenKw => {
+                if !self.matches(&Token::LParen) {
+                    return Err("Expected '(' after LEN".to_string());
+                }
+                let inner = self.parse_expr()?;
+                if !self.matches(&Token::RParen) {
+                    return Err("Expected ')'".to_string());
+                }
+                Expr::ArrayOrCall("LEN".to_string(), vec![inner])
+            }
+            Token::Identifier(name) => {
+                if matches!(self.peek(), Token::LParen) {
+                    self.advance();
+                    let mut args = Vec::new();
+                    if !matches!(self.peek(), Token::RParen) {
+                        args.push(self.parse_expr()?);
+                        while matches!(self.peek(), Token::Comma) {
+                            self.advance();
+                            args.push(self.parse_expr()?);
+                        }
                     }
-                    let inner = self.parse_expr()?;
                     if !self.matches(&Token::RParen) {
                         return Err("Expected ')'".to_string());
                     }
-                    return Ok(Expr::ArrayOrCall("LEN".to_string(), vec![inner]));
+                    Expr::ArrayOrCall(name, args)
+                } else {
+                    Expr::Variable(name)
                 }
-                Token::Identifier(name) => {
-                    if matches!(self.peek(), Token::LParen) {
-                        self.advance();
-                        let mut args = Vec::new();
-                        if !matches!(self.peek(), Token::RParen) {
-                            args.push(self.parse_expr()?);
-                            while matches!(self.peek(), Token::Comma) {
-                                self.advance();
-                                args.push(self.parse_expr()?);
-                            }
-                        }
-                        if !self.matches(&Token::RParen) {
-                            return Err("Expected ')'".to_string());
-                        }
-                        return Ok(Expr::ArrayOrCall(name, args));
-                    }
-                    return Ok(Expr::Variable(name));
-                }
-                _ => unreachable!(),
             }
-        }
-        
-        let mut e = match self.advance() {
             Token::LParen => {
                 let e = self.parse_expr()?;
                 if !self.matches(&Token::RParen) {

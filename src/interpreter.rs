@@ -23,6 +23,7 @@ pub enum Value {
 #[derive(Debug, Clone)]
 pub struct ArrayValue {
     pub dims: Vec<usize>,
+    pub lower_bounds: Vec<isize>,
     pub data: Vec<Value>,
     pub element_type: VarType,
 }
@@ -127,6 +128,7 @@ pub struct Interpreter {
     pub data_labels: HashMap<String, usize>,
     pub scopes: Vec<Scope>,
     pub files: HashMap<u32, FileHandle>,
+    pub option_base: isize,
     pub default_types: Vec<(char, char, VarType)>,
     pub gosub_stack: Vec<usize>,
     pub rng_state: u64,
@@ -154,6 +156,7 @@ pub fn run(
         data_labels: HashMap::new(),
         scopes: vec![Scope::new()],
         files: HashMap::new(),
+        option_base: 0,
         default_types: Vec::new(),
         gosub_stack: Vec::new(),
         rng_state: 0x12345678,
@@ -202,16 +205,10 @@ pub fn run(
     for (i, s) in exec_stmts.iter().enumerate() {
         match s {
             Stmt::Label(n) => {
-                interp.labels.insert(n.clone(), i);
-                interp
-                    .data_labels
-                    .insert(n.clone(), interp.data_values.len());
+                interp.register_label(n.clone(), i)?;
             }
             Stmt::LineNumber(n) => {
-                interp.labels.insert(format!("{}", n), i);
-                interp
-                    .data_labels
-                    .insert(format!("{}", n), interp.data_values.len());
+                interp.register_label(format!("{}", n), i)?;
             }
             Stmt::Data(items) => {
                 interp
@@ -274,6 +271,14 @@ impl Interpreter {
     }
     fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().unwrap()
+    }
+    fn register_label(&mut self, label: String, stmt_index: usize) -> Result<(), String> {
+        if self.labels.contains_key(&label) {
+            return Err(format!("Duplicate label: {}", label));
+        }
+        self.labels.insert(label.clone(), stmt_index);
+        self.data_labels.insert(label, self.data_values.len());
+        Ok(())
     }
     fn infer_runtime_type(&self, name: &str) -> VarType {
         let suffixed = infer_type_from_suffix(name);
@@ -358,6 +363,14 @@ impl Interpreter {
             | Stmt::Noop
             | Stmt::TypeDef(_, _)
             | Stmt::Data(_) => Ok(Flow::Normal),
+            Stmt::OptionBase(e) => {
+                let base = self.eval(e)?.as_number()?;
+                if base.fract() != 0.0 || !(base == 0.0 || base == 1.0) {
+                    return Err("OPTION BASE must be 0 or 1".to_string());
+                }
+                self.option_base = base as isize;
+                Ok(Flow::Normal)
+            }
             Stmt::DefType(vtype, ranges) => {
                 for (start, end) in ranges {
                     self.default_types.push((*start, *end, vtype.clone()));
@@ -563,7 +576,10 @@ impl Interpreter {
                             .truncate(false)
                             .open(&fname)
                             .map_err(|e| format!("OPEN error: {}", e))?;
-                        FileHandle::Random { file: f, record_len: rlen.unwrap_or(128) }
+                        FileHandle::Random {
+                            file: f,
+                            record_len: rlen.unwrap_or(128),
+                        }
                     }
                 };
                 self.files.insert(*handle, entry);
@@ -749,7 +765,9 @@ impl Interpreter {
                     if self.cancel_flag.load(Ordering::Relaxed) {
                         return Err("Execution interrupted by user".to_string());
                     }
-                    let _ = self.input_rx.recv_timeout(std::time::Duration::from_millis(100));
+                    let _ = self
+                        .input_rx
+                        .recv_timeout(std::time::Duration::from_millis(100));
                 }
                 Ok(Flow::Normal)
             }
@@ -782,17 +800,21 @@ impl Interpreter {
             self.set_var(&d.name, init)?;
         } else {
             let mut sizes = Vec::new();
+            let mut lower_bounds = Vec::new();
             for de in &d.dims {
-                let n = self.eval(de)?.as_number()? as i64;
-                if n < 0 {
-                    return Err("Negative array size".to_string());
+                let upper = self.eval(de)?.as_number()? as isize;
+                let lower = self.option_base;
+                if upper < lower {
+                    return Err("Array upper bound is below lower bound".to_string());
                 }
-                sizes.push((n + 1) as usize);
+                sizes.push((upper - lower + 1) as usize);
+                lower_bounds.push(lower);
             }
             let total: usize = sizes.iter().product();
             let init = self.default_value_for_type(&d.vtype);
             let arr = ArrayValue {
                 dims: sizes,
+                lower_bounds,
                 data: vec![init; total],
                 element_type: d.vtype.clone(),
             };
@@ -987,7 +1009,7 @@ impl Interpreter {
             LValue::Index(name, idx_exprs) => {
                 let mut idxs = Vec::new();
                 for e in idx_exprs {
-                    idxs.push(self.eval(e)?.as_number()? as usize);
+                    idxs.push(self.eval(e)?.as_number()? as isize);
                 }
                 let scope_idx = if self.current_scope().vars.contains_key(&name.clone()) {
                     self.scopes.len() - 1
@@ -997,7 +1019,7 @@ impl Interpreter {
                     return Err(format!("Undefined array '{}'", name));
                 };
                 if let Some(Value::Array(a)) = self.scopes[scope_idx].vars.get_mut(name) {
-                    let flat = flatten_index(&a.dims, &idxs)?;
+                    let flat = flatten_index(&a.dims, &a.lower_bounds, &idxs)?;
                     let coerced = if a.element_type.is_string() {
                         Value::Str(v.as_string()?)
                     } else {
@@ -1140,11 +1162,11 @@ impl Interpreter {
             LValue::Index(n, idx_exprs) => {
                 let mut idxs = Vec::new();
                 for e in idx_exprs {
-                    idxs.push(self.eval(e)?.as_number()? as usize);
+                    idxs.push(self.eval(e)?.as_number()? as isize);
                 }
                 let v = self.get_var_ref(n);
                 if let Some(Value::Array(a)) = v {
-                    let flat = flatten_index(&a.dims, &idxs)?;
+                    let flat = flatten_index(&a.dims, &a.lower_bounds, &idxs)?;
                     Ok(a.data[flat].clone())
                 } else {
                     Err(format!("'{}' is not an array", n))
@@ -1152,7 +1174,9 @@ impl Interpreter {
             }
             LValue::Field(parent, fname) => match &**parent {
                 LValue::Var(n) => {
-                    let pv = self.get_var_ref(n).ok_or_else(|| format!("Undefined variable '{}'", n))?;
+                    let pv = self
+                        .get_var_ref(n)
+                        .ok_or_else(|| format!("Undefined variable '{}'", n))?;
                     if let Value::Record(rec) = pv {
                         for (fn_, fv) in &rec.fields {
                             if fn_.eq_ignore_ascii_case(fname) {
@@ -1187,7 +1211,9 @@ impl Interpreter {
             Expr::Variable(n) => Ok(self.get_var(n)),
             Expr::FieldAccess(parent, fname) => match &**parent {
                 Expr::Variable(n) => {
-                    let pv = self.get_var_ref(n).ok_or_else(|| format!("Undefined variable '{}'", n))?;
+                    let pv = self
+                        .get_var_ref(n)
+                        .ok_or_else(|| format!("Undefined variable '{}'", n))?;
                     if let Value::Record(rec) = pv {
                         for (fn_, fv) in &rec.fields {
                             if fn_.eq_ignore_ascii_case(fname) {
@@ -1235,11 +1261,11 @@ impl Interpreter {
                 }
                 let mut idxs = Vec::new();
                 for a in args {
-                    idxs.push(self.eval(a)?.as_number()? as usize);
+                    idxs.push(self.eval(a)?.as_number()? as isize);
                 }
                 let v = self.get_var_ref(name);
                 if let Some(Value::Array(a)) = v {
-                    let flat = flatten_index(&a.dims, &idxs)?;
+                    let flat = flatten_index(&a.dims, &a.lower_bounds, &idxs)?;
                     Ok(a.data[flat].clone())
                 } else {
                     Err(format!("Undefined array '{}'", name))
@@ -1655,17 +1681,18 @@ fn block_label(body: &[Stmt], target: &str) -> Option<usize> {
     None
 }
 
-fn flatten_index(dims: &[usize], idxs: &[usize]) -> Result<usize, String> {
-    if dims.len() != idxs.len() {
+fn flatten_index(dims: &[usize], lower_bounds: &[isize], idxs: &[isize]) -> Result<usize, String> {
+    if dims.len() != idxs.len() || dims.len() != lower_bounds.len() {
         return Err("Array index count mismatch".to_string());
     }
     let mut flat = 0;
     let mut mult = 1;
     for i in (0..dims.len()).rev() {
-        if idxs[i] >= dims[i] {
+        let offset = idxs[i] - lower_bounds[i];
+        if offset < 0 || offset as usize >= dims[i] {
             return Err("Array index out of bounds".to_string());
         }
-        flat += idxs[i] * mult;
+        flat += offset as usize * mult;
         mult *= dims[i];
     }
     Ok(flat)
@@ -1775,6 +1802,54 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lines, vec!["ADA"]);
+    }
+
+    #[test]
+    fn documented_record_field_prints() {
+        let lines = run_source(
+            "TYPE PLAYER\nNAME AS STRING\nSCORE AS INTEGER\nEND TYPE\nDIM P AS PLAYER\nP.NAME = \"Ada\"\nP.SCORE = 42\nPRINT P.NAME; \" scored \"; P.SCORE\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["Ada scored 42"]);
+    }
+
+    #[test]
+    fn duplicate_line_numbers_are_errors() {
+        let err = run_source("10 PRINT \"FIRST\"\n10 PRINT \"SECOND\"\n", &[]).unwrap_err();
+        assert!(err.contains("Duplicate label: 10"));
+    }
+
+    #[test]
+    fn arrays_default_to_zero_based_bounds() {
+        let lines = run_source(
+            "DIM A(1)\nA(0) = 7\nA(1) = 8\nPRINT A(0); \",\"; A(1)\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["7,8"]);
+    }
+
+    #[test]
+    fn option_base_one_sets_array_lower_bounds() {
+        let lines = run_source(
+            "OPTION BASE 1\nDIM A(2)\nA(1) = 10\nA(2) = 20\nPRINT A(1); \",\"; A(2)\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["10,20"]);
+    }
+
+    #[test]
+    fn option_base_one_rejects_zero_index() {
+        let err = run_source("OPTION BASE 1\nDIM A(2)\nA(0) = 99\n", &[]).unwrap_err();
+        assert!(err.contains("Array index out of bounds"));
+    }
+
+    #[test]
+    fn option_base_rejects_invalid_base() {
+        let err = run_source("OPTION BASE 2\nDIM A(2)\n", &[]).unwrap_err();
+        assert!(err.contains("OPTION BASE must be 0 or 1"));
     }
 
     #[test]

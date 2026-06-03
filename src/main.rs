@@ -241,42 +241,42 @@ fn run_ide_loop(
         if needs_redraw || is_running {
             configure_editor(&mut textarea, &current_file, dirty, is_running);
             terminal.draw(|f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(8),
-                    Constraint::Length(3),
-                ])
-                .split(f.area());
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3),
+                        Constraint::Min(8),
+                        Constraint::Length(3),
+                    ])
+                    .split(f.area());
 
-            let header = Paragraph::new(header_line(&current_file, dirty, is_running)).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" {} ", APP_NAME)),
-            );
-            f.render_widget(header, chunks[0]);
+                let header = Paragraph::new(header_line(&current_file, dirty, is_running)).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(" {} ", APP_NAME)),
+                );
+                f.render_widget(header, chunks[0]);
 
-            render_basic_editor(
-                f,
-                chunks[1],
-                &textarea,
-                EditorRenderMeta {
-                    current_file: &current_file,
-                    dirty,
-                    is_running,
-                    show_cursor: matches!(app_state, AppState::Editing),
-                },
-                &mut editor_view,
-            );
+                render_basic_editor(
+                    f,
+                    chunks[1],
+                    &textarea,
+                    EditorRenderMeta {
+                        current_file: &current_file,
+                        dirty,
+                        is_running,
+                        show_cursor: matches!(app_state, AppState::Editing),
+                    },
+                    &mut editor_view,
+                );
 
-            let footer_text = footer_text(&app_state, &status_msg);
-            let footer_color = footer_color(&app_state, status_color);
-            let footer = Paragraph::new(footer_text)
-                .style(Style::default().fg(footer_color).bg(Color::Black))
-                .block(Block::default().borders(Borders::ALL).title(" Status "));
-            f.render_widget(footer, chunks[2]);
-        })?;
+                let footer_text = footer_text(&app_state, &status_msg);
+                let footer_color = footer_color(&app_state, status_color);
+                let footer = Paragraph::new(footer_text)
+                    .style(Style::default().fg(footer_color).bg(Color::Black))
+                    .block(Block::default().borders(Borders::ALL).title(" Status "));
+                f.render_widget(footer, chunks[2]);
+            })?;
             needs_redraw = false;
         }
 
@@ -719,7 +719,7 @@ fn highlight_basic_code<'a>(
 
     let mut col = 0;
     let mut char_iter = line.char_indices().peekable();
-    
+
     while let Some((i, c)) = char_iter.next() {
         if c == '\'' {
             push_visible_span(
@@ -754,7 +754,10 @@ fn highlight_basic_code<'a>(
             );
             continue;
         }
-        let next_is_digit = char_iter.peek().map(|&(_, ch)| ch.is_ascii_digit()).unwrap_or(false);
+        let next_is_digit = char_iter
+            .peek()
+            .map(|&(_, ch)| ch.is_ascii_digit())
+            .unwrap_or(false);
         if c.is_ascii_digit() || (c == '.' && next_is_digit) {
             let start = i;
             let mut saw_dot = c == '.';
@@ -797,7 +800,7 @@ fn highlight_basic_code<'a>(
                     char_iter.next();
                 }
             }
-            
+
             let word = &line[start..end];
             if word.eq_ignore_ascii_case("REM") {
                 push_visible_span(
@@ -859,7 +862,7 @@ fn push_visible_span<'a>(
     if end_col <= left_col || current_len >= left_col + text_width {
         return;
     }
-    
+
     // Fast path: if the text is fully visible and ascii
     if current_len >= left_col && end_col <= left_col + text_width && text.is_ascii() {
         spans.push(Span::styled(text, style));
@@ -868,23 +871,31 @@ fn push_visible_span<'a>(
 
     let skip = left_col.saturating_sub(current_len);
     let take = (left_col + text_width).saturating_sub(current_len + skip);
-    
+
     // We have to extract a substring by char indexing
     let mut char_indices = text.char_indices();
-    let start_byte = if skip == 0 { 0 } else {
-        char_indices.nth(skip - 1).map(|(idx, c)| idx + c.len_utf8()).unwrap_or(text.len())
+    let start_byte = if skip == 0 {
+        0
+    } else {
+        char_indices
+            .nth(skip - 1)
+            .map(|(idx, c)| idx + c.len_utf8())
+            .unwrap_or(text.len())
     };
-    
+
     let end_byte = if skip + take >= text_chars_count {
         text.len()
     } else {
         if take == 0 {
             start_byte
         } else {
-            char_indices.nth(take - 1).map(|(idx, _)| idx).unwrap_or(text.len())
+            char_indices
+                .nth(take - 1)
+                .map(|(idx, _)| idx)
+                .unwrap_or(text.len())
         }
     };
-    
+
     if start_byte < end_byte {
         spans.push(Span::styled(&text[start_byte..end_byte], style));
     }
@@ -895,12 +906,13 @@ fn is_basic_keyword(word: &str) -> bool {
 }
 fn is_basic_builtin(word: &str) -> bool {
     [
-        "ABS", "ASC", "ATN", "CHR$", "CDBL", "CINT", "CLNG", "COS", "CSNG", "CSTR", "CSTR$",
-        "EXP", "FIX", "HEX$", "INSTR", "INT", "LCASE$", "LEFT$", "LEN", "LOCATE", "LOG",
-        "LTRIM", "LTRIM$", "MID$", "OCT$", "RIGHT$", "RND", "RTRIM", "RTRIM$", "SGN", "SIN",
-        "SPACE$", "SPC", "SQR", "STR$", "STRING$", "TAB", "TAN", "TIMER", "TRIM$", "TRIM",
-        "UCASE$", "VAL"
-    ].iter().any(|&k| k.eq_ignore_ascii_case(word))
+        "ABS", "ASC", "ATN", "CHR$", "CDBL", "CINT", "CLNG", "COS", "CSNG", "CSTR", "CSTR$", "EXP",
+        "FIX", "HEX$", "INSTR", "INT", "LCASE$", "LEFT$", "LEN", "LOCATE", "LOG", "LTRIM",
+        "LTRIM$", "MID$", "OCT$", "RIGHT$", "RND", "RTRIM", "RTRIM$", "SGN", "SIN", "SPACE$",
+        "SPC", "SQR", "STR$", "STRING$", "TAB", "TAN", "TIMER", "TRIM$", "TRIM", "UCASE$", "VAL",
+    ]
+    .iter()
+    .any(|&k| k.eq_ignore_ascii_case(word))
 }
 
 fn header_line(path: &Path, dirty: bool, is_running: bool) -> Line<'static> {
@@ -965,7 +977,9 @@ fn save_editor(path: &Path, textarea: &TextArea<'static>) -> Result<(), String> 
         if i > 0 {
             writer.write_all(b"\n").map_err(|e| e.to_string())?;
         }
-        writer.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        writer
+            .write_all(line.as_bytes())
+            .map_err(|e| e.to_string())?;
     }
     writer.flush().map_err(|e| e.to_string())?;
     Ok(())
@@ -1067,7 +1081,8 @@ fn write_run_source(source: &str) -> Result<PathBuf, String> {
         .suffix(".bas")
         .tempfile()
         .map_err(|e| e.to_string())?;
-    file.write_all(source.as_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(source.as_bytes())
+        .map_err(|e| e.to_string())?;
     file.flush().map_err(|e| e.to_string())?;
     let (_, path) = file.keep().map_err(|e| e.to_string())?;
     Ok(path)
