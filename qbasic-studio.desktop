@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=QBasic Studio
+Comment=A terminal IDE and interpreter for a practical QBasic-inspired BASIC dialect.
+Exec=qbasic_interpreter %f
+Icon=utilities-terminal
+Terminal=true
+Type=Application
+Categories=Development;IDE;
+MimeType=text/x-basic;

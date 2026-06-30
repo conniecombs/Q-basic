@@ -1096,6 +1096,59 @@ fn run_working_directory(current_file: &Path) -> PathBuf {
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+#[cfg(windows)]
+fn spawn_program_window(source_path: &Path, run_cwd: &Path) -> Result<Child, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+    let exe = env::current_exe().map_err(|err| err.to_string())?;
+    let mut command = Command::new(exe);
+    command
+        .arg("run-window")
+        .arg(source_path)
+        .current_dir(run_cwd)
+        .creation_flags(CREATE_NEW_CONSOLE);
+    command.spawn().map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_program_window(source_path: &Path, run_cwd: &Path) -> Result<Child, String> {
+    let exe = env::current_exe().map_err(|err| err.to_string())?;
+
+    let terminals = [
+        ("x-terminal-emulator", vec!["-e"]),
+        ("gnome-terminal", vec!["--"]),
+        ("konsole", vec!["-e"]),
+        ("xfce4-terminal", vec!["-x"]),
+        ("alacritty", vec!["-e"]),
+        ("kitty", vec!["--"]),
+        ("xterm", vec!["-e"]),
+    ];
+
+    for (term, args) in terminals.iter() {
+        match Command::new(term)
+            .args(args)
+            .arg(&exe)
+            .arg("run-window")
+            .arg(source_path)
+            .current_dir(run_cwd)
+            .spawn()
+        {
+            Ok(child) => return Ok(child),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => continue,
+        }
+    }
+
+    Command::new(exe)
+        .arg("run-window")
+        .arg(source_path)
+        .current_dir(run_cwd)
+        .spawn()
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn spawn_program_window(source_path: &Path, run_cwd: &Path) -> Result<Child, String> {
     let exe = env::current_exe().map_err(|err| err.to_string())?;
     let mut command = Command::new(exe);
@@ -1103,19 +1156,8 @@ fn spawn_program_window(source_path: &Path, run_cwd: &Path) -> Result<Child, Str
         .arg("run-window")
         .arg(source_path)
         .current_dir(run_cwd);
-    configure_new_console(&mut command);
     command.spawn().map_err(|err| err.to_string())
 }
-
-#[cfg(windows)]
-fn configure_new_console(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    command.creation_flags(CREATE_NEW_CONSOLE);
-}
-
-#[cfg(not(windows))]
-fn configure_new_console(_command: &mut Command) {}
 
 fn poll_running_program(
     running_program: &mut Option<RunningProgram>,
