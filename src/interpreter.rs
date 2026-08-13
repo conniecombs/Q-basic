@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -74,7 +73,7 @@ pub enum ConsoleMsg {
 enum Flow {
     Normal,
     Goto(String),
-    Gosub(String, usize),
+    Gosub(String),
     Return,
     End,
     ExitFor,
@@ -245,7 +244,7 @@ pub fn run(
                     .get(&t)
                     .ok_or_else(|| format!("Undefined label: {}", t))?;
             }
-            Flow::Gosub(t, _) => {
+            Flow::Gosub(t) => {
                 interp.gosub_stack.push(next_pc);
                 pc = *interp
                     .labels
@@ -494,7 +493,7 @@ impl Interpreter {
                 Ok(Flow::Normal)
             }
             Stmt::Goto(t) => Ok(Flow::Goto(t.clone())),
-            Stmt::Gosub(t) => Ok(Flow::Gosub(t.clone(), 0)),
+            Stmt::Gosub(t) => Ok(Flow::Gosub(t.clone())),
             Stmt::Return => Ok(Flow::Return),
             Stmt::End => Ok(Flow::End),
             Stmt::Exit(kind) => match kind.as_str() {
@@ -509,9 +508,9 @@ impl Interpreter {
                 }
                 Ok(Flow::Normal)
             }
-            Stmt::Redim(decls) => {
+            Stmt::Redim(decls, preserve) => {
                 for d in decls {
-                    self.do_dim(d)?;
+                    self.do_redim(d, *preserve)?;
                 }
                 Ok(Flow::Normal)
             }
@@ -611,7 +610,12 @@ impl Interpreter {
                 g.screen(mode);
                 Ok(Flow::Normal)
             }
-            Stmt::Window(_) => Ok(Flow::Normal), // Stub: Multiple windows not supported in shared buffer
+            Stmt::Window(arg) => {
+                if let Some(e) = arg {
+                    let _ = self.eval(e)?;
+                }
+                Ok(Flow::Normal)
+            }
             Stmt::Cls => {
                 let mut g = self.graphics.lock().unwrap();
                 g.cls();
@@ -742,7 +746,7 @@ impl Interpreter {
                 } else {
                     let target = targets[idx as usize - 1].clone();
                     if *is_gosub {
-                        Ok(Flow::Gosub(target, 0))
+                        Ok(Flow::Gosub(target))
                     } else {
                         Ok(Flow::Goto(target))
                     }
@@ -799,28 +803,44 @@ impl Interpreter {
             let init = self.default_value_for_type(&d.vtype);
             self.set_var(&d.name, init)?;
         } else {
-            let mut sizes = Vec::new();
-            let mut lower_bounds = Vec::new();
-            for de in &d.dims {
-                let upper = self.eval(de)?.as_number()? as isize;
-                let lower = self.option_base;
-                if upper < lower {
-                    return Err("Array upper bound is below lower bound".to_string());
-                }
-                sizes.push((upper - lower + 1) as usize);
-                lower_bounds.push(lower);
-            }
-            let total: usize = sizes.iter().product();
-            let init = self.default_value_for_type(&d.vtype);
-            let arr = ArrayValue {
-                dims: sizes,
-                lower_bounds,
-                data: vec![init; total],
-                element_type: d.vtype.clone(),
-            };
+            let arr = self.array_for_dim_decl(d)?;
             self.set_var(&d.name, Value::Array(arr))?;
         }
         Ok(())
+    }
+    fn do_redim(&mut self, d: &DimDecl, preserve: bool) -> Result<(), String> {
+        if !preserve || d.dims.is_empty() {
+            return self.do_dim(d);
+        }
+
+        let mut new_arr = self.array_for_dim_decl(d)?;
+        let existing = self.get_var_ref(&d.name).cloned();
+        if let Some(Value::Array(old_arr)) = existing {
+            copy_preserved_array_values(&old_arr, &mut new_arr)?;
+        }
+        self.set_var(&d.name, Value::Array(new_arr))?;
+        Ok(())
+    }
+    fn array_for_dim_decl(&mut self, d: &DimDecl) -> Result<ArrayValue, String> {
+        let mut sizes = Vec::new();
+        let mut lower_bounds = Vec::new();
+        for de in &d.dims {
+            let upper = self.eval(de)?.as_number()? as isize;
+            let lower = self.option_base;
+            if upper < lower {
+                return Err("Array upper bound is below lower bound".to_string());
+            }
+            sizes.push((upper - lower + 1) as usize);
+            lower_bounds.push(lower);
+        }
+        let total: usize = sizes.iter().product();
+        let init = self.default_value_for_type(&d.vtype);
+        Ok(ArrayValue {
+            dims: sizes,
+            lower_bounds,
+            data: vec![init; total],
+            element_type: d.vtype.clone(),
+        })
     }
     fn do_read(&mut self, vars: &[LValue]) -> Result<Flow, String> {
         for lv in vars {
@@ -1020,11 +1040,7 @@ impl Interpreter {
                 };
                 if let Some(Value::Array(a)) = self.scopes[scope_idx].vars.get_mut(name) {
                     let flat = flatten_index(&a.dims, &a.lower_bounds, &idxs)?;
-                    let coerced = if a.element_type.is_string() {
-                        Value::Str(v.as_string()?)
-                    } else {
-                        Value::Number(v.as_number()?)
-                    };
+                    let coerced = coerce_value_for_type(v, &a.element_type)?;
                     a.data[flat] = coerced;
                     Ok(())
                 } else {
@@ -1457,6 +1473,24 @@ impl Interpreter {
         let mut byref_targets: Vec<Option<LValue>> = Vec::new();
         for (i, a) in args.iter().enumerate() {
             let p = &info.params[i];
+            if p.is_array {
+                let array_name = expr_to_array_arg_name(a)
+                    .ok_or_else(|| format!("Parameter '{}' expects array", p.name))?;
+                let v = self
+                    .get_var_ref(&array_name)
+                    .cloned()
+                    .ok_or_else(|| format!("Undefined array '{}'", array_name))?;
+                if !matches!(v, Value::Array(_)) {
+                    return Err(format!("Parameter '{}' expects array", p.name));
+                }
+                arg_values.push(v);
+                if p.by_ref {
+                    byref_targets.push(Some(LValue::Var(array_name)));
+                } else {
+                    byref_targets.push(None);
+                }
+                continue;
+            }
             if p.by_ref {
                 if let Some(lv) = expr_to_lvalue(a) {
                     let v = self.read_lvalue(&lv)?;
@@ -1473,10 +1507,10 @@ impl Interpreter {
         }
         let mut new_scope = Scope::new();
         for (p, v) in info.params.iter().zip(arg_values) {
-            let coerced = if p.vtype.is_string() {
-                Value::Str(v.as_string()?)
-            } else if matches!(v, Value::Record(_) | Value::Array(_)) {
+            let coerced = if matches!(v, Value::Record(_) | Value::Array(_)) {
                 v
+            } else if p.vtype.is_string() {
+                Value::Str(v.as_string()?)
             } else {
                 Value::Number(v.as_number()?)
             };
@@ -1579,6 +1613,14 @@ fn expr_to_lvalue(e: &Expr) -> Option<LValue> {
             let p = expr_to_lvalue(parent)?;
             Some(LValue::Field(Box::new(p), fname.clone()))
         }
+        _ => None,
+    }
+}
+
+fn expr_to_array_arg_name(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Variable(n) => Some(n.clone()),
+        Expr::ArrayOrCall(n, args) if args.is_empty() => Some(n.clone()),
         _ => None,
     }
 }
@@ -1696,6 +1738,40 @@ fn flatten_index(dims: &[usize], lower_bounds: &[isize], idxs: &[isize]) -> Resu
         mult *= dims[i];
     }
     Ok(flat)
+}
+
+fn unflatten_index(flat: usize, dims: &[usize], lower_bounds: &[isize]) -> Vec<isize> {
+    let mut remaining = flat;
+    let mut idxs = vec![0; dims.len()];
+    for i in (0..dims.len()).rev() {
+        let offset = remaining % dims[i];
+        remaining /= dims[i];
+        idxs[i] = lower_bounds[i] + offset as isize;
+    }
+    idxs
+}
+
+fn copy_preserved_array_values(
+    old_arr: &ArrayValue,
+    new_arr: &mut ArrayValue,
+) -> Result<(), String> {
+    for (flat, value) in old_arr.data.iter().enumerate() {
+        let idxs = unflatten_index(flat, &old_arr.dims, &old_arr.lower_bounds);
+        if let Ok(new_flat) = flatten_index(&new_arr.dims, &new_arr.lower_bounds, &idxs) {
+            new_arr.data[new_flat] = coerce_value_for_type(value.clone(), &new_arr.element_type)?;
+        }
+    }
+    Ok(())
+}
+
+fn coerce_value_for_type(v: Value, element_type: &VarType) -> Result<Value, String> {
+    if element_type.is_string() {
+        Ok(Value::Str(v.as_string()?))
+    } else if matches!(v, Value::Record(_) | Value::Array(_)) {
+        Ok(v)
+    } else {
+        Ok(Value::Number(v.as_number()?))
+    }
 }
 
 fn apply_binop(l: &Value, op: &BinOp, r: &Value) -> Result<Value, String> {
@@ -1856,6 +1932,59 @@ mod tests {
     fn input_uses_declared_string_type() {
         let lines = run_source("DIM S AS STRING\nINPUT S\nPRINT S\n", &["hello"]).unwrap();
         assert_eq!(lines, vec!["hello"]);
+    }
+
+    #[test]
+    fn input_accepts_array_elements() {
+        let lines = run_source("DIM A(1)\nINPUT A(0)\nPRINT A(0)\n", &["7"]).unwrap();
+        assert_eq!(lines, vec!["7"]);
+    }
+
+    #[test]
+    fn forward_string_function_without_suffix_type_checks() {
+        let lines = run_source(
+            "S$ = MAKE()\nPRINT S$\nFUNCTION MAKE() AS STRING\nMAKE = \"OK\"\nEND FUNCTION\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["OK"]);
+    }
+
+    #[test]
+    fn declare_function_supplies_forward_return_type() {
+        let tokens =
+            crate::lexer::tokenize("DECLARE FUNCTION MAKE() AS STRING\nS$ = MAKE()\n").unwrap();
+        crate::parser::parse(tokens).unwrap();
+    }
+
+    #[test]
+    fn redim_preserve_keeps_overlapping_values() {
+        let lines = run_source(
+            "DIM A(1)\nA(0) = 42\nA(1) = 99\nREDIM PRESERVE A(2)\nPRINT A(0); \",\"; A(1); \",\"; A(2)\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["42,99,0"]);
+    }
+
+    #[test]
+    fn redim_preserve_keeps_existing_explicit_element_type() {
+        let lines = run_source(
+            "DIM A(1) AS STRING\nA(0) = \"Ada\"\nREDIM PRESERVE A(2)\nPRINT A(0); \":\"; A(2)\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["Ada:"]);
+    }
+
+    #[test]
+    fn array_parameters_can_be_passed_by_reference() {
+        let lines = run_source(
+            "DIM A(1)\nCALL SETFIRST(A())\nPRINT A(0)\nSUB SETFIRST(A() AS DOUBLE)\nA(0) = 12\nEND SUB\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(lines, vec!["12"]);
     }
 
     #[test]

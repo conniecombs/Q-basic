@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod graphics;
 mod interpreter;
 mod lexer;
@@ -27,7 +25,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use tui_textarea::TextArea;
@@ -1013,13 +1011,6 @@ fn is_edit_key(key: &KeyEvent) -> bool {
         KeyCode::Char(_) => !key.modifiers.contains(KeyModifiers::CONTROL),
         KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter | KeyCode::Tab => true,
         _ => false,
-    }
-}
-
-fn request_stop(cancel_flag: &Arc<AtomicBool>, input_tx_opt: &Option<mpsc::Sender<String>>) {
-    cancel_flag.store(true, Ordering::Relaxed);
-    if let Some(tx) = input_tx_opt {
-        let _ = tx.send(String::new());
     }
 }
 

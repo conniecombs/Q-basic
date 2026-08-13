@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Number(f64),
@@ -25,7 +24,6 @@ pub enum Token {
     Gosub,
     Return,
     End,
-    Rem,
     Dim,
     Data,
     Read,

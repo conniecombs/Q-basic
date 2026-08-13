@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::lexer::Token;
 use std::collections::HashMap;
 
@@ -134,7 +133,7 @@ pub enum Stmt {
     Data(Vec<DataItem>),
     Read(Vec<LValue>),
     Restore(Option<String>),
-    Redim(Vec<DimDecl>),
+    Redim(Vec<DimDecl>, bool),
     Erase(Vec<String>),
     Const(String, Expr),
     Noop,
@@ -387,18 +386,24 @@ impl Parser {
                                 j += 1;
                             }
                         }
+                        if matches!(self.tokens[j], Token::RParen) {
+                            j += 1;
+                        }
                     }
                     let ret_type = if is_func {
                         if matches!(self.tokens[j], Token::As) {
                             j += 1;
-                            match &self.tokens[j] {
+                            let ret_type = match &self.tokens[j] {
                                 Token::Integer => VarType::Integer,
                                 Token::Long => VarType::Long,
                                 Token::Single => VarType::Single,
                                 Token::Double => VarType::Double,
                                 Token::StringKw => VarType::Str,
+                                Token::Identifier(s) => VarType::UserType(s.to_uppercase()),
                                 _ => infer_type_from_suffix(&name),
-                            }
+                            };
+                            j += 1;
+                            ret_type
                         } else {
                             infer_type_from_suffix(&name)
                         }
@@ -729,20 +734,8 @@ impl Parser {
         }
         let mut vars = Vec::new();
         loop {
-            let name = match self.advance() {
-                Token::Identifier(n) => n,
-                t => return Err(format!("Expected variable in INPUT, got {:?}", t)),
-            };
-            let mut lv = LValue::Var(name.clone());
-            while matches!(self.peek(), Token::Dot) {
-                self.advance();
-                let f = match self.advance() {
-                    Token::Identifier(s) => s,
-                    t => return Err(format!("Expected field, got {:?}", t)),
-                };
-                lv = LValue::Field(Box::new(lv), f);
-            }
-            self.declare_var_if_needed(&name);
+            let lv = self.parse_lvalue()?;
+            self.declare_lvalue_if_needed(&lv);
             vars.push(lv);
             if matches!(self.peek(), Token::Comma) {
                 self.advance();
@@ -1064,10 +1057,14 @@ impl Parser {
     }
     fn parse_redim(&mut self) -> Result<Stmt, String> {
         self.advance();
-        if matches!(self.peek(), Token::Preserve) {
+        let preserve = if matches!(self.peek(), Token::Preserve) {
             self.advance();
-        }
-        self.parse_dim_decls().map(Stmt::Redim)
+            true
+        } else {
+            false
+        };
+        self.parse_dim_decls()
+            .map(|decls| Stmt::Redim(decls, preserve))
     }
     fn parse_dim_decls(&mut self) -> Result<Vec<DimDecl>, String> {
         let mut decls = Vec::new();
@@ -1106,6 +1103,8 @@ impl Parser {
                     }
                     t => return Err(format!("Unexpected type in DIM: {:?}", t)),
                 }
+            } else if let Some(existing) = self.var_types.get(&name).cloned() {
+                existing
             } else {
                 self.infer_type_for_name(&name)
             };
@@ -1230,6 +1229,33 @@ impl Parser {
     }
     fn parse_declare(&mut self) -> Result<Stmt, String> {
         self.advance();
+        let is_func = match self.advance() {
+            Token::Sub => false,
+            Token::Function => true,
+            t => {
+                return Err(format!(
+                    "Expected SUB or FUNCTION after DECLARE, got {:?}",
+                    t
+                ))
+            }
+        };
+        let name = match self.advance() {
+            Token::Identifier(n) => n,
+            t => return Err(format!("Expected DECLARE name, got {:?}", t)),
+        };
+        let params = self.parse_params()?;
+        let ret_type = if is_func {
+            if matches!(self.peek(), Token::As) {
+                self.advance();
+                self.parse_type_name("return type")?
+            } else {
+                self.infer_type_for_name(&name)
+            }
+        } else {
+            VarType::Auto
+        };
+        self.sub_sigs
+            .insert(name.to_uppercase(), (params, is_func, ret_type));
         self.consume_to_line_end();
         Ok(Stmt::Noop)
     }
@@ -1371,14 +1397,7 @@ impl Parser {
         let params = self.parse_params()?;
         let ret_type = if matches!(self.peek(), Token::As) {
             self.advance();
-            match self.advance() {
-                Token::Integer => VarType::Integer,
-                Token::Long => VarType::Long,
-                Token::Single => VarType::Single,
-                Token::Double => VarType::Double,
-                Token::StringKw => VarType::Str,
-                t => return Err(format!("Unexpected return type: {:?}", t)),
-            }
+            self.parse_type_name("return type")?
         } else {
             self.infer_type_for_name(&name)
         };
@@ -1440,15 +1459,7 @@ impl Parser {
                     }
                     let vt = if matches!(self.peek(), Token::As) {
                         self.advance();
-                        match self.advance() {
-                            Token::Integer => VarType::Integer,
-                            Token::Long => VarType::Long,
-                            Token::Single => VarType::Single,
-                            Token::Double => VarType::Double,
-                            Token::StringKw => VarType::Str,
-                            Token::Identifier(s) => VarType::UserType(s.to_uppercase()),
-                            t => return Err(format!("Unexpected type: {:?}", t)),
-                        }
+                        self.parse_type_name("parameter type")?
                     } else {
                         self.infer_type_for_name(&pname)
                     };
@@ -1470,6 +1481,17 @@ impl Parser {
             }
         }
         Ok(params)
+    }
+    fn parse_type_name(&mut self, context: &str) -> Result<VarType, String> {
+        match self.advance() {
+            Token::Integer => Ok(VarType::Integer),
+            Token::Long => Ok(VarType::Long),
+            Token::Single => Ok(VarType::Single),
+            Token::Double => Ok(VarType::Double),
+            Token::StringKw => Ok(VarType::Str),
+            Token::Identifier(s) => Ok(VarType::UserType(s.to_uppercase())),
+            t => Err(format!("Unexpected {}: {:?}", context, t)),
+        }
     }
     fn parse_call(&mut self) -> Result<Stmt, String> {
         self.advance();
